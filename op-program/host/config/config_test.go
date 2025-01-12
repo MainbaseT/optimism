@@ -1,20 +1,24 @@
 package config
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 
 	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-program/chainconfig"
+	"github.com/ethereum-optimism/optimism/op-program/client/boot"
+	"github.com/ethereum-optimism/optimism/op-program/host/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/stretchr/testify/require"
 )
 
 var (
-	validRollupConfig    = chaincfg.Sepolia
-	validL2Genesis       = chainconfig.OPSepoliaChainConfig
+	validRollupConfig    = chaincfg.OPSepolia()
+	validL2Genesis       = chainconfig.OPSepoliaChainConfig()
 	validL1Head          = common.Hash{0xaa}
 	validL2Head          = common.Hash{0xbb}
 	validL2Claim         = common.Hash{0xcc}
@@ -138,7 +142,8 @@ func TestFetchingEnabled(t *testing.T) {
 	t.Run("FetchingEnabledWhenBothFetcherUrlsSpecified", func(t *testing.T) {
 		cfg := validConfig()
 		cfg.L1URL = "https://example.com:1234"
-		cfg.L2URL = "https://example.com:5678"
+		cfg.L1BeaconURL = "https://example.com:5678"
+		cfg.L2URL = "https://example.com:91011"
 		require.True(t, cfg.FetchingEnabled(), "Should enable fetching when node URL supplied")
 	})
 }
@@ -160,17 +165,71 @@ func TestRejectExecAndServerMode(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoExecInServerMode)
 }
 
-func TestIsCustomChainConfig(t *testing.T) {
+func TestCustomL2ChainID(t *testing.T) {
 	t.Run("nonCustom", func(t *testing.T) {
 		cfg := validConfig()
-		require.Equal(t, cfg.IsCustomChainConfig, false)
+		require.Equal(t, cfg.L2ChainID, validL2Genesis.ChainID.Uint64())
 	})
 	t.Run("custom", func(t *testing.T) {
 		customChainConfig := &params.ChainConfig{ChainID: big.NewInt(0x1212121212)}
 		cfg := NewConfig(validRollupConfig, customChainConfig, validL1Head, validL2Head, validL2OutputRoot, validL2Claim, validL2ClaimBlockNum)
-		require.Equal(t, cfg.IsCustomChainConfig, true)
+		require.Equal(t, cfg.L2ChainID, boot.CustomChainIDIndicator)
+	})
+}
+
+func TestAgreedPrestate(t *testing.T) {
+	t.Run("requiredWithInterop-nil", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.InteropEnabled = true
+		cfg.AgreedPrestate = nil
+		err := cfg.Check()
+		require.ErrorIs(t, err, ErrMissingAgreedPrestate)
+	})
+	t.Run("requiredWithInterop-empty", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.InteropEnabled = true
+		cfg.AgreedPrestate = []byte{}
+		err := cfg.Check()
+		require.ErrorIs(t, err, ErrMissingAgreedPrestate)
 	})
 
+	t.Run("notRequiredWithoutInterop", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.AgreedPrestate = nil
+		require.NoError(t, cfg.Check())
+	})
+
+	t.Run("valid", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.InteropEnabled = true
+		cfg.AgreedPrestate = []byte{1}
+		cfg.L2OutputRoot = crypto.Keccak256Hash(cfg.AgreedPrestate)
+		require.NoError(t, cfg.Check())
+	})
+
+	t.Run("mustMatchL2OutputRoot", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.InteropEnabled = true
+		cfg.AgreedPrestate = []byte{1}
+		cfg.L2OutputRoot = common.Hash{0xaa}
+		require.ErrorIs(t, cfg.Check(), ErrInvalidAgreedPrestate)
+	})
+}
+
+func TestDBFormat(t *testing.T) {
+	t.Run("invalid", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.DataFormat = "foo"
+		require.ErrorIs(t, cfg.Check(), ErrInvalidDataFormat)
+	})
+	for _, format := range types.SupportedDataFormats {
+		format := format
+		t.Run(fmt.Sprintf("%v", format), func(t *testing.T) {
+			cfg := validConfig()
+			cfg.DataFormat = format
+			require.NoError(t, cfg.Check())
+		})
+	}
 }
 
 func validConfig() *Config {

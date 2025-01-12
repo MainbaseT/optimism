@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strconv"
 
 	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
+	"github.com/ethereum-optimism/optimism/op-program/chainconfig"
+	"github.com/ethereum-optimism/optimism/op-program/client/boot"
+	"github.com/ethereum-optimism/optimism/op-program/host/types"
+	"github.com/ethereum/go-ethereum/crypto"
 
-	opnode "github.com/ethereum-optimism/optimism/op-node"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-program/host/flags"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
@@ -20,23 +25,30 @@ import (
 )
 
 var (
-	ErrMissingRollupConfig = errors.New("missing rollup config")
-	ErrMissingL2Genesis    = errors.New("missing l2 genesis")
-	ErrInvalidL1Head       = errors.New("invalid l1 head")
-	ErrInvalidL2Head       = errors.New("invalid l2 head")
-	ErrInvalidL2OutputRoot = errors.New("invalid l2 output root")
-	ErrL1AndL2Inconsistent = errors.New("l1 and l2 options must be specified together or both omitted")
-	ErrInvalidL2Claim      = errors.New("invalid l2 claim")
-	ErrInvalidL2ClaimBlock = errors.New("invalid l2 claim block number")
-	ErrDataDirRequired     = errors.New("datadir must be specified when in non-fetching mode")
-	ErrNoExecInServerMode  = errors.New("exec command must not be set when in server mode")
+	ErrMissingRollupConfig   = errors.New("missing rollup config")
+	ErrMissingL2Genesis      = errors.New("missing l2 genesis")
+	ErrInvalidL1Head         = errors.New("invalid l1 head")
+	ErrInvalidL2Head         = errors.New("invalid l2 head")
+	ErrInvalidL2OutputRoot   = errors.New("invalid l2 output root")
+	ErrInvalidAgreedPrestate = errors.New("invalid l2 agreed prestate")
+	ErrL1AndL2Inconsistent   = errors.New("l1 and l2 options must be specified together or both omitted")
+	ErrInvalidL2Claim        = errors.New("invalid l2 claim")
+	ErrInvalidL2ClaimBlock   = errors.New("invalid l2 claim block number")
+	ErrDataDirRequired       = errors.New("datadir must be specified when in non-fetching mode")
+	ErrNoExecInServerMode    = errors.New("exec command must not be set when in server mode")
+	ErrInvalidDataFormat     = errors.New("invalid data format")
+	ErrMissingAgreedPrestate = errors.New("missing agreed prestate")
 )
 
 type Config struct {
-	Rollup *rollup.Config
+	L2ChainID uint64
+	Rollup    *rollup.Config
 	// DataDir is the directory to read/write pre-image data from/to.
 	// If not set, an in-memory key-value store is used and fetching data must be enabled
 	DataDir string
+
+	// DataFormat specifies the format to use for on-disk storage. Only applies when DataDir is set.
+	DataFormat types.DataFormat
 
 	// L1Head is the block hash of the L1 chain head block
 	L1Head      common.Hash
@@ -49,7 +61,11 @@ type Config struct {
 	L2Head common.Hash
 	// L2OutputRoot is the agreed L2 output root to start derivation from
 	L2OutputRoot common.Hash
-	L2URL        string
+	// L2URL is the URL of the L2 node to fetch L2 data from, this is the canonical URL for L2 data
+	// This URL is used as a fallback for L2ExperimentalURL if the experimental URL fails or cannot retrieve the desired data
+	L2URL string
+	// L2ExperimentalURL is the URL of the L2 node (non hash db archival node, for example, reth archival node) to fetch L2 data from
+	L2ExperimentalURL string
 	// L2Claim is the claimed L2 output root to verify
 	L2Claim common.Hash
 	// L2ClaimBlockNumber is the block number the claimed L2 output root is from
@@ -65,8 +81,10 @@ type Config struct {
 	// No client program is run.
 	ServerMode bool
 
-	// IsCustomChainConfig indicates that the program uses a custom chain configuration
-	IsCustomChainConfig bool
+	// InteropEnabled enables interop fault proof rules when running the client in-process
+	InteropEnabled bool
+	// AgreedPrestate is the preimage of the agreed prestate claim. Required for interop.
+	AgreedPrestate []byte
 }
 
 func (c *Config) Check() error {
@@ -100,12 +118,22 @@ func (c *Config) Check() error {
 	if c.ServerMode && c.ExecCmd != "" {
 		return ErrNoExecInServerMode
 	}
+	if c.DataDir != "" && !slices.Contains(types.SupportedDataFormats, c.DataFormat) {
+		return ErrInvalidDataFormat
+	}
+	if c.InteropEnabled {
+		if len(c.AgreedPrestate) == 0 {
+			return ErrMissingAgreedPrestate
+		}
+		if crypto.Keccak256Hash(c.AgreedPrestate) != c.L2OutputRoot {
+			return fmt.Errorf("%w: must be preimage of L2 output root", ErrInvalidAgreedPrestate)
+		}
+	}
 	return nil
 }
 
 func (c *Config) FetchingEnabled() bool {
-	// TODO: Include Beacon URL once cancun is active on all chains we fault prove.
-	return c.L1URL != "" && c.L2URL != ""
+	return c.L1URL != "" && c.L2URL != "" && c.L1BeaconURL != ""
 }
 
 // NewConfig creates a Config with all optional values set to the CLI default value
@@ -118,18 +146,23 @@ func NewConfig(
 	l2Claim common.Hash,
 	l2ClaimBlockNum uint64,
 ) *Config {
-	_, err := params.LoadOPStackChainConfig(l2Genesis.ChainID.Uint64())
-	isCustomConfig := err != nil
+	l2ChainID := l2Genesis.ChainID.Uint64()
+	_, err := params.LoadOPStackChainConfig(l2ChainID)
+	if err != nil {
+		// Unknown chain ID so assume it is custom
+		l2ChainID = boot.CustomChainIDIndicator
+	}
 	return &Config{
-		Rollup:              rollupCfg,
-		L2ChainConfig:       l2Genesis,
-		L1Head:              l1Head,
-		L2Head:              l2Head,
-		L2OutputRoot:        l2OutputRoot,
-		L2Claim:             l2Claim,
-		L2ClaimBlockNumber:  l2ClaimBlockNum,
-		L1RPCKind:           sources.RPCKindStandard,
-		IsCustomChainConfig: isCustomConfig,
+		L2ChainID:          l2ChainID,
+		Rollup:             rollupCfg,
+		L2ChainConfig:      l2Genesis,
+		L1Head:             l1Head,
+		L2Head:             l2Head,
+		L2OutputRoot:       l2OutputRoot,
+		L2Claim:            l2Claim,
+		L2ClaimBlockNumber: l2ClaimBlockNum,
+		L1RPCKind:          sources.RPCKindStandard,
+		DataFormat:         types.DataFormatDirectory,
 	}
 }
 
@@ -137,15 +170,23 @@ func NewConfigFromCLI(log log.Logger, ctx *cli.Context) (*Config, error) {
 	if err := flags.CheckRequired(ctx); err != nil {
 		return nil, err
 	}
-	rollupCfg, err := opnode.NewRollupConfigFromCLI(log, ctx)
-	if err != nil {
-		return nil, err
-	}
+
 	l2Head := common.HexToHash(ctx.String(flags.L2Head.Name))
 	if l2Head == (common.Hash{}) {
 		return nil, ErrInvalidL2Head
 	}
-	l2OutputRoot := common.HexToHash(ctx.String(flags.L2OutputRoot.Name))
+	var l2OutputRoot common.Hash
+	var agreedPrestate []byte
+	if ctx.IsSet(flags.L2OutputRoot.Name) {
+		l2OutputRoot = common.HexToHash(ctx.String(flags.L2OutputRoot.Name))
+	} else if ctx.IsSet(flags.L2AgreedPrestate.Name) {
+		prestateStr := ctx.String(flags.L2AgreedPrestate.Name)
+		agreedPrestate = common.FromHex(prestateStr)
+		if len(agreedPrestate) == 0 {
+			return nil, ErrInvalidAgreedPrestate
+		}
+		l2OutputRoot = crypto.Keccak256Hash(agreedPrestate)
+	}
 	if l2OutputRoot == (common.Hash{}) {
 		return nil, ErrInvalidL2OutputRoot
 	}
@@ -162,44 +203,75 @@ func NewConfigFromCLI(log log.Logger, ctx *cli.Context) (*Config, error) {
 	if l1Head == (common.Hash{}) {
 		return nil, ErrInvalidL1Head
 	}
-	l2GenesisPath := ctx.String(flags.L2GenesisPath.Name)
+
+	var err error
+	var rollupCfg *rollup.Config
 	var l2ChainConfig *params.ChainConfig
-	var isCustomConfig bool
-	if l2GenesisPath == "" {
-		networkName := ctx.String(flags.Network.Name)
-		ch := chaincfg.ChainByName(networkName)
-		if ch == nil {
-			return nil, fmt.Errorf("flag %s is required for network %s", flags.L2GenesisPath.Name, networkName)
+	var l2ChainID uint64
+	networkName := ctx.String(flags.Network.Name)
+	if networkName != "" {
+		var chainID uint64
+		if chainID, err = strconv.ParseUint(networkName, 10, 64); err != nil {
+			ch := chaincfg.ChainByName(networkName)
+			if ch == nil {
+				return nil, fmt.Errorf("invalid network: %q", networkName)
+			}
+			chainID = ch.ChainID
 		}
-		cfg, err := params.LoadOPStackChainConfig(ch.ChainID)
+
+		l2ChainConfig, err = chainconfig.ChainConfigByChainID(chainID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load chain config for chain %d: %w", ch.ChainID, err)
+			return nil, fmt.Errorf("failed to load chain config for chain %d: %w", chainID, err)
 		}
-		l2ChainConfig = cfg
+		rollupCfg, err = chainconfig.RollupConfigByChainID(chainID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load rollup config for chain %d: %w", chainID, err)
+		}
+		l2ChainID = chainID
 	} else {
+		l2GenesisPath := ctx.String(flags.L2GenesisPath.Name)
 		l2ChainConfig, err = loadChainConfigFromGenesis(l2GenesisPath)
-		isCustomConfig = true
+		if err != nil {
+			return nil, fmt.Errorf("invalid genesis: %w", err)
+		}
+
+		rollupConfigPath := ctx.String(flags.RollupConfig.Name)
+		rollupCfg, err = loadRollupConfig(rollupConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rollup config: %w", err)
+		}
+
+		l2ChainID = l2ChainConfig.ChainID.Uint64()
+		if ctx.Bool(flags.L2Custom.Name) {
+			log.Warn("Using custom chain configuration via preimage oracle. This is not compatible with on-chain execution.")
+			l2ChainID = boot.CustomChainIDIndicator
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("invalid genesis: %w", err)
+
+	dbFormat := types.DataFormat(ctx.String(flags.DataFormat.Name))
+	if !slices.Contains(types.SupportedDataFormats, dbFormat) {
+		return nil, fmt.Errorf("invalid %w: %v", ErrInvalidDataFormat, dbFormat)
 	}
 	return &Config{
-		Rollup:              rollupCfg,
-		DataDir:             ctx.String(flags.DataDir.Name),
-		L2URL:               ctx.String(flags.L2NodeAddr.Name),
-		L2ChainConfig:       l2ChainConfig,
-		L2Head:              l2Head,
-		L2OutputRoot:        l2OutputRoot,
-		L2Claim:             l2Claim,
-		L2ClaimBlockNumber:  l2ClaimBlockNum,
-		L1Head:              l1Head,
-		L1URL:               ctx.String(flags.L1NodeAddr.Name),
-		L1BeaconURL:         ctx.String(flags.L1BeaconAddr.Name),
-		L1TrustRPC:          ctx.Bool(flags.L1TrustRPC.Name),
-		L1RPCKind:           sources.RPCProviderKind(ctx.String(flags.L1RPCProviderKind.Name)),
-		ExecCmd:             ctx.String(flags.Exec.Name),
-		ServerMode:          ctx.Bool(flags.Server.Name),
-		IsCustomChainConfig: isCustomConfig,
+		L2ChainID:          l2ChainID,
+		Rollup:             rollupCfg,
+		DataDir:            ctx.String(flags.DataDir.Name),
+		DataFormat:         dbFormat,
+		L2URL:              ctx.String(flags.L2NodeAddr.Name),
+		L2ExperimentalURL:  ctx.String(flags.L2NodeExperimentalAddr.Name),
+		L2ChainConfig:      l2ChainConfig,
+		L2Head:             l2Head,
+		L2OutputRoot:       l2OutputRoot,
+		AgreedPrestate:     agreedPrestate,
+		L2Claim:            l2Claim,
+		L2ClaimBlockNumber: l2ClaimBlockNum,
+		L1Head:             l1Head,
+		L1URL:              ctx.String(flags.L1NodeAddr.Name),
+		L1BeaconURL:        ctx.String(flags.L1BeaconAddr.Name),
+		L1TrustRPC:         ctx.Bool(flags.L1TrustRPC.Name),
+		L1RPCKind:          sources.RPCProviderKind(ctx.String(flags.L1RPCProviderKind.Name)),
+		ExecCmd:            ctx.String(flags.Exec.Name),
+		ServerMode:         ctx.Bool(flags.Server.Name),
 	}, nil
 }
 
@@ -214,4 +286,15 @@ func loadChainConfigFromGenesis(path string) (*params.ChainConfig, error) {
 		return nil, fmt.Errorf("parse l2 genesis file: %w", err)
 	}
 	return genesis.Config, nil
+}
+
+func loadRollupConfig(rollupConfigPath string) (*rollup.Config, error) {
+	file, err := os.Open(rollupConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read rollup config: %w", err)
+	}
+	defer file.Close()
+
+	var rollupConfig rollup.Config
+	return &rollupConfig, rollupConfig.ParseRollupConfig(file)
 }

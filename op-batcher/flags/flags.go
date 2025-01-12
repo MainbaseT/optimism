@@ -8,9 +8,9 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	altda "github.com/ethereum-optimism/optimism/op-alt-da"
 	"github.com/ethereum-optimism/optimism/op-batcher/compressor"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
-	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	opservice "github.com/ethereum-optimism/optimism/op-service"
 	openum "github.com/ethereum-optimism/optimism/op-service/enum"
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
@@ -75,6 +75,11 @@ var (
 		Usage:   "The maximum size of a batch tx submitted to L1. Ignored for blobs, where max blob size will be used.",
 		Value:   120_000, // will be overwritten to max for blob da-type
 		EnvVars: prefixEnvVars("MAX_L1_TX_SIZE_BYTES"),
+	}
+	MaxBlocksPerSpanBatch = &cli.IntFlag{
+		Name:    "max-blocks-per-span-batch",
+		Usage:   "Maximum number of blocks to add to a span batch. Default is 0 - no maximum.",
+		EnvVars: prefixEnvVars("MAX_BLOCKS_PER_SPAN_BATCH"),
 	}
 	TargetNumFramesFlag = &cli.IntFlag{
 		Name:    "target-num-frames",
@@ -151,6 +156,36 @@ var (
 		Value:   false,
 		EnvVars: prefixEnvVars("WAIT_NODE_SYNC"),
 	}
+	ThrottleIntervalFlag = &cli.DurationFlag{
+		Name:    "throttle-interval",
+		Usage:   "Interval between potential DA throttling actions. Zero disables throttling.",
+		Value:   2 * time.Second,
+		EnvVars: prefixEnvVars("THROTTLE_INTERVAL"),
+	}
+	ThrottleThresholdFlag = &cli.IntFlag{
+		Name:    "throttle-threshold",
+		Usage:   "The threshold on pending-blocks-bytes-current beyond which the batcher will instruct the block builder to start throttling transactions with larger DA demands",
+		Value:   1_000_000,
+		EnvVars: prefixEnvVars("THROTTLE_THRESHOLD"),
+	}
+	ThrottleTxSizeFlag = &cli.IntFlag{
+		Name:    "throttle-tx-size",
+		Usage:   "The DA size of transactions to start throttling when we are over the throttle threshold",
+		Value:   5000, // less than 1% of all transactions should be affected by this limit
+		EnvVars: prefixEnvVars("THROTTLE_TX_SIZE"),
+	}
+	ThrottleBlockSizeFlag = &cli.IntFlag{
+		Name:    "throttle-block-size",
+		Usage:   "The total DA limit to start imposing on block building when we are over the throttle threshold",
+		Value:   21_000, // at least 70 transactions per block of up to 300 compressed bytes each.
+		EnvVars: prefixEnvVars("THROTTLE_BLOCK_SIZE"),
+	}
+	ThrottleAlwaysBlockSizeFlag = &cli.IntFlag{
+		Name:    "throttle-always-block-size",
+		Usage:   "The total DA limit to start imposing on block building at all times",
+		Value:   130_000, // should be larger than the builder's max-l2-tx-size to prevent endlessly throttling some txs
+		EnvVars: prefixEnvVars("THROTTLE_ALWAYS_BLOCK_SIZE"),
+	}
 	// Legacy Flags
 	SequencerHDPathFlag = txmgr.SequencerHDPathFlag
 )
@@ -169,6 +204,7 @@ var optionalFlags = []cli.Flag{
 	MaxPendingTransactionsFlag,
 	MaxChannelDurationFlag,
 	MaxL1TxSizeBytesFlag,
+	MaxBlocksPerSpanBatch,
 	TargetNumFramesFlag,
 	ApproxComprRatioFlag,
 	CompressorFlag,
@@ -178,6 +214,11 @@ var optionalFlags = []cli.Flag{
 	DataAvailabilityTypeFlag,
 	ActiveSequencerCheckDurationFlag,
 	CompressionAlgoFlag,
+	ThrottleThresholdFlag,
+	ThrottleIntervalFlag,
+	ThrottleTxSizeFlag,
+	ThrottleBlockSizeFlag,
+	ThrottleAlwaysBlockSizeFlag,
 }
 
 func init() {
@@ -186,7 +227,7 @@ func init() {
 	optionalFlags = append(optionalFlags, opmetrics.CLIFlags(EnvVarPrefix)...)
 	optionalFlags = append(optionalFlags, oppprof.CLIFlags(EnvVarPrefix)...)
 	optionalFlags = append(optionalFlags, txmgr.CLIFlags(EnvVarPrefix)...)
-	optionalFlags = append(optionalFlags, plasma.CLIFlags(EnvVarPrefix, "")...)
+	optionalFlags = append(optionalFlags, altda.CLIFlags(EnvVarPrefix, "")...)
 
 	Flags = append(requiredFlags, optionalFlags...)
 }

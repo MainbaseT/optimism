@@ -2,6 +2,7 @@ package flags
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -18,15 +19,21 @@ const EnvVarPrefix = "OP_CONDUCTOR"
 var (
 	ConsensusAddr = &cli.StringFlag{
 		Name:    "consensus.addr",
-		Usage:   "Address to listen for consensus connections",
+		Usage:   "Address (excluding port) to listen for consensus connections.",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_ADDR"),
 		Value:   "127.0.0.1",
 	}
 	ConsensusPort = &cli.IntFlag{
 		Name:    "consensus.port",
-		Usage:   "Port to listen for consensus connections",
+		Usage:   "Port to listen for consensus connections. May be 0 to let the system select a port.",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_PORT"),
 		Value:   50050,
+	}
+	AdvertisedFullAddr = &cli.StringFlag{
+		Name:    "consensus.advertised",
+		Usage:   "Full address (host and port) for other peers to contact the consensus server. Optional: if left empty, the local address is advertised.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_ADVERTISED"),
+		Value:   "",
 	}
 	RaftBootstrap = &cli.BoolFlag{
 		Name:    "raft.bootstrap",
@@ -43,6 +50,24 @@ var (
 		Name:    "raft.storage.dir",
 		Usage:   "Directory to store raft data",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_STORAGE_DIR"),
+	}
+	RaftSnapshotInterval = &cli.DurationFlag{
+		Name:    "raft.snapshot-interval",
+		Usage:   "The interval to check if a snapshot should be taken.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_SNAPSHOT_INTERVAL"),
+		Value:   120 * time.Second,
+	}
+	RaftSnapshotThreshold = &cli.Uint64Flag{
+		Name:    "raft.snapshot-threshold",
+		Usage:   "Number of logs to trigger a snapshot",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_SNAPSHOT_THRESHOLD"),
+		Value:   8192,
+	}
+	RaftTrailingLogs = &cli.Uint64Flag{
+		Name:    "raft.trailing-logs",
+		Usage:   "Number of logs to keep after a snapshot",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_TRAILING_LOGS"),
+		Value:   10240,
 	}
 	NodeRPC = &cli.StringFlag{
 		Name:    "node.rpc",
@@ -108,11 +133,15 @@ var requiredFlags = []cli.Flag{
 }
 
 var optionalFlags = []cli.Flag{
+	AdvertisedFullAddr,
 	Paused,
 	RPCEnableProxy,
 	RaftBootstrap,
 	HealthCheckSafeEnabled,
 	HealthCheckSafeInterval,
+	RaftSnapshotInterval,
+	RaftSnapshotThreshold,
+	RaftTrailingLogs,
 }
 
 func init() {

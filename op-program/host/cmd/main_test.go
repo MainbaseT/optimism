@@ -2,15 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"testing"
 
 	"github.com/ethereum-optimism/optimism/op-node/chaincfg"
 	"github.com/ethereum-optimism/optimism/op-program/chainconfig"
+	"github.com/ethereum-optimism/optimism/op-program/client/boot"
 	"github.com/ethereum-optimism/optimism/op-program/host/config"
+	"github.com/ethereum-optimism/optimism/op-program/host/types"
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -71,7 +75,7 @@ func TestDefaultCLIOptionsMatchDefaultConfig(t *testing.T) {
 	require.NoError(t, err)
 	defaultCfg := config.NewConfig(
 		rollupCfg,
-		chainconfig.OPSepoliaChainConfig,
+		chainconfig.OPSepoliaChainConfig(),
 		common.HexToHash(l1HeadValue),
 		common.HexToHash(l2HeadValue),
 		common.HexToHash(l2OutputRoot),
@@ -98,7 +102,7 @@ func TestNetwork(t *testing.T) {
 		genesisFile := writeValidGenesis(t)
 
 		cfg := configForArgs(t, addRequiredArgsExcept("--network", "--rollup.config", configFile, "--l2.genesis", genesisFile))
-		require.Equal(t, *chaincfg.Sepolia, *cfg.Rollup)
+		require.Equal(t, *chaincfg.OPSepolia(), *cfg.Rollup)
 	})
 
 	for _, name := range chaincfg.AvailableNetworks() {
@@ -117,6 +121,20 @@ func TestDataDir(t *testing.T) {
 	expected := "/tmp/mainTestDataDir"
 	cfg := configForArgs(t, addRequiredArgs("--datadir", expected))
 	require.Equal(t, expected, cfg.DataDir)
+}
+
+func TestDataFormat(t *testing.T) {
+	for _, format := range types.SupportedDataFormats {
+		format := format
+		t.Run(fmt.Sprintf("Valid-%v", format), func(t *testing.T) {
+			cfg := configForArgs(t, addRequiredArgs("--data.format", string(format)))
+			require.Equal(t, format, cfg.DataFormat)
+		})
+	}
+
+	t.Run("Invalid", func(t *testing.T) {
+		verifyArgsInvalid(t, "invalid data format: foo", addRequiredArgs("--data.format", "foo"))
+	})
 }
 
 func TestL2(t *testing.T) {
@@ -138,9 +156,33 @@ func TestL2Genesis(t *testing.T) {
 		require.Equal(t, l2GenesisConfig, cfg.L2ChainConfig)
 	})
 
-	t.Run("NotRequiredForGoerli", func(t *testing.T) {
+	t.Run("NotRequiredForSepolia", func(t *testing.T) {
 		cfg := configForArgs(t, replaceRequiredArg("--network", "sepolia"))
-		require.Equal(t, chainconfig.OPSepoliaChainConfig, cfg.L2ChainConfig)
+		require.Equal(t, chainconfig.OPSepoliaChainConfig(), cfg.L2ChainConfig)
+	})
+}
+
+func TestL2ChainID(t *testing.T) {
+	t.Run("DefaultToNetworkChainID", func(t *testing.T) {
+		cfg := configForArgs(t, replaceRequiredArg("--network", "op-mainnet"))
+		require.Equal(t, uint64(10), cfg.L2ChainID)
+	})
+
+	t.Run("DefaultToGenesisChainID", func(t *testing.T) {
+		rollupCfgFile := writeValidRollupConfig(t)
+		genesisFile := writeValidGenesis(t)
+		cfg := configForArgs(t, addRequiredArgsExcept("--network", "--rollup.config", rollupCfgFile, "--l2.genesis", genesisFile))
+		require.Equal(t, l2GenesisConfig.ChainID.Uint64(), cfg.L2ChainID)
+	})
+
+	t.Run("OverrideToCustomIndicator", func(t *testing.T) {
+		rollupCfgFile := writeValidRollupConfig(t)
+		genesisFile := writeValidGenesis(t)
+		cfg := configForArgs(t, addRequiredArgsExcept("--network",
+			"--rollup.config", rollupCfgFile,
+			"--l2.genesis", genesisFile,
+			"--l2.custom"))
+		require.Equal(t, boot.CustomChainIDIndicator, cfg.L2ChainID)
 	})
 }
 
@@ -161,7 +203,11 @@ func TestL2Head(t *testing.T) {
 
 func TestL2OutputRoot(t *testing.T) {
 	t.Run("Required", func(t *testing.T) {
-		verifyArgsInvalid(t, "flag l2.outputroot is required", addRequiredArgsExcept("--l2.outputroot"))
+		verifyArgsInvalid(t, "flag l2.outputroot or l2.agreed-prestate is required", addRequiredArgsExcept("--l2.outputroot"))
+	})
+
+	t.Run("NotRequiredWhenAgreedPrestateProvided", func(t *testing.T) {
+		configForArgs(t, addRequiredArgsExcept("--l2.outputroot", "--l2.agreed-prestate", "0x1234"))
 	})
 
 	t.Run("Valid", func(t *testing.T) {
@@ -171,6 +217,33 @@ func TestL2OutputRoot(t *testing.T) {
 
 	t.Run("Invalid", func(t *testing.T) {
 		verifyArgsInvalid(t, config.ErrInvalidL2OutputRoot.Error(), replaceRequiredArg("--l2.outputroot", "something"))
+	})
+}
+
+func TestL2AgreedPrestate(t *testing.T) {
+	t.Run("NotRequiredWhenL2OutputRootProvided", func(t *testing.T) {
+		configForArgs(t, addRequiredArgsExcept("--l2.outputroot", "--l2.outputroot", "0x1234"))
+	})
+
+	t.Run("Valid", func(t *testing.T) {
+		prestate := "0x1234"
+		prestateBytes := common.FromHex(prestate)
+		expectedOutputRoot := crypto.Keccak256Hash(prestateBytes)
+		cfg := configForArgs(t, addRequiredArgsExcept("--l2.outputroot", "--l2.agreed-prestate", prestate))
+		require.Equal(t, expectedOutputRoot, cfg.L2OutputRoot)
+		require.Equal(t, prestateBytes, cfg.AgreedPrestate)
+	})
+
+	t.Run("MustNotSpecifyWithL2OutputRoot", func(t *testing.T) {
+		verifyArgsInvalid(t, "flag l2.outputroot and l2.agreed-prestate must not be specified together", addRequiredArgs("--l2.agreed-prestate", "0x1234"))
+	})
+
+	t.Run("Invalid", func(t *testing.T) {
+		verifyArgsInvalid(t, config.ErrInvalidAgreedPrestate.Error(), addRequiredArgsExcept("--l2.outputroot", "--l2.agreed-prestate", "something"))
+	})
+
+	t.Run("ZeroLength", func(t *testing.T) {
+		verifyArgsInvalid(t, config.ErrInvalidAgreedPrestate.Error(), addRequiredArgsExcept("--l2.outputroot", "--l2.agreed-prestate", "0x"))
 	})
 }
 
@@ -255,6 +328,19 @@ func TestL2Claim(t *testing.T) {
 	t.Run("Allows all zero with prefix", func(t *testing.T) {
 		cfg := configForArgs(t, replaceRequiredArg("--l2.claim", "0x0000000000000000000000000000000000000000000000000000000000000000"))
 		require.EqualValues(t, common.Hash{}, cfg.L2Claim)
+	})
+}
+
+func TestL2Experimental(t *testing.T) {
+	t.Run("DefaultEmpty", func(t *testing.T) {
+		cfg := configForArgs(t, addRequiredArgs())
+		require.Equal(t, cfg.L2ExperimentalURL, "")
+	})
+
+	t.Run("Valid", func(t *testing.T) {
+		expected := "https://example.com:8545"
+		cfg := configForArgs(t, replaceRequiredArg("--l2.experimental", expected))
+		require.EqualValues(t, expected, cfg.L2ExperimentalURL)
 	})
 }
 
@@ -372,7 +458,7 @@ func writeValidGenesis(t *testing.T) string {
 
 func writeValidRollupConfig(t *testing.T) string {
 	dir := t.TempDir()
-	j, err := json.Marshal(chaincfg.Sepolia)
+	j, err := json.Marshal(chaincfg.OPSepolia())
 	require.NoError(t, err)
 	cfgFile := dir + "/rollup.json"
 	require.NoError(t, os.WriteFile(cfgFile, j, 0666))

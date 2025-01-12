@@ -6,8 +6,9 @@ import (
 
 	"github.com/urfave/cli/v2"
 
+	altda "github.com/ethereum-optimism/optimism/op-alt-da"
+	"github.com/ethereum-optimism/optimism/op-node/rollup/engine"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sync"
-	plasma "github.com/ethereum-optimism/optimism/op-plasma"
 	openum "github.com/ethereum-optimism/optimism/op-service/enum"
 	opflags "github.com/ethereum-optimism/optimism/op-service/flags"
 	oplog "github.com/ethereum-optimism/optimism/op-service/log"
@@ -25,8 +26,9 @@ const (
 	SequencerCategory  = "3. SEQUENCER"
 	OperationsCategory = "4. LOGGING, METRICS, DEBUGGING, AND API"
 	P2PCategory        = "5. PEER-TO-PEER"
-	PlasmaCategory     = "6. PLASMA (EXPERIMENTAL)"
+	AltDACategory      = "6. ALT-DA (EXPERIMENTAL)"
 	MiscCategory       = "7. MISC"
+	InteropCategory    = "8. INTEROP (SUPER EXPERIMENTAL)"
 )
 
 func init() {
@@ -156,13 +158,6 @@ var (
 		}(),
 		Category: L1RPCCategory,
 	}
-	L1RethDBPath = &cli.StringFlag{
-		Name:     "l1.rethdb",
-		Usage:    "The L1 RethDB path, used to fetch receipts for L1 blocks. Only applicable when using the `reth_db` RPC kind with `l1.rpckind`.",
-		EnvVars:  prefixEnvVars("L1_RETHDB"),
-		Hidden:   true,
-		Category: L1RPCCategory,
-	}
 	L1RPCMaxConcurrency = &cli.IntFlag{
 		Name:     "l1.max-concurrency",
 		Usage:    "Maximum number of concurrent RPC requests to make to the L1 RPC provider.",
@@ -190,6 +185,17 @@ var (
 		EnvVars:  prefixEnvVars("L1_HTTP_POLL_INTERVAL"),
 		Value:    time.Second * 12,
 		Category: L1RPCCategory,
+	}
+	L2EngineKind = &cli.GenericFlag{
+		Name: "l2.enginekind",
+		Usage: "The kind of engine client, used to control the behavior of optimism in respect to different types of engine clients. Valid options: " +
+			openum.EnumString(engine.Kinds),
+		EnvVars: prefixEnvVars("L2_ENGINE_KIND"),
+		Value: func() *engine.Kind {
+			out := engine.Geth
+			return &out
+		}(),
+		Category: RollupCategory,
 	}
 	VerifierL1Confs = &cli.Uint64Flag{
 		Name:     "verifier.l1-confs",
@@ -247,7 +253,7 @@ var (
 	MetricsAddrFlag = &cli.StringFlag{
 		Name:     "metrics.addr",
 		Usage:    "Metrics listening address",
-		Value:    "0.0.0.0", // TODO(CLI-4159): Switch to 127.0.0.1
+		Value:    "0.0.0.0", // TODO: Switch to 127.0.0.1
 		EnvVars:  prefixEnvVars("METRICS_ADDR"),
 		Category: OperationsCategory,
 	}
@@ -260,28 +266,31 @@ var (
 	}
 	SnapshotLog = &cli.StringFlag{
 		Name:     "snapshotlog.file",
-		Usage:    "Path to the snapshot log file",
+		Usage:    "Deprecated. This flag is ignored, but here for compatibility.",
 		EnvVars:  prefixEnvVars("SNAPSHOT_LOG"),
 		Category: OperationsCategory,
+		Hidden:   true, // non-critical function, removed, flag is no-op to avoid breaking setups.
 	}
 	HeartbeatEnabledFlag = &cli.BoolFlag{
 		Name:     "heartbeat.enabled",
-		Usage:    "Enables or disables heartbeating",
+		Usage:    "Deprecated, no-op flag.",
 		EnvVars:  prefixEnvVars("HEARTBEAT_ENABLED"),
 		Category: OperationsCategory,
+		Hidden:   true,
 	}
 	HeartbeatMonikerFlag = &cli.StringFlag{
 		Name:     "heartbeat.moniker",
-		Usage:    "Sets a moniker for this node",
+		Usage:    "Deprecated, no-op flag.",
 		EnvVars:  prefixEnvVars("HEARTBEAT_MONIKER"),
 		Category: OperationsCategory,
+		Hidden:   true,
 	}
 	HeartbeatURLFlag = &cli.StringFlag{
 		Name:     "heartbeat.url",
-		Usage:    "Sets the URL to heartbeat to",
+		Usage:    "Deprecated, no-op flag.",
 		EnvVars:  prefixEnvVars("HEARTBEAT_URL"),
-		Value:    "https://heartbeat.optimism.io",
 		Category: OperationsCategory,
+		Hidden:   true,
 	}
 	RollupHalt = &cli.StringFlag{
 		Name:     "rollup.halt",
@@ -357,6 +366,40 @@ var (
 		Value:    time.Second * 1,
 		Category: SequencerCategory,
 	}
+	/* Interop flags, experimental. */
+	InteropSupervisor = &cli.StringFlag{
+		Name: "interop.supervisor",
+		Usage: "Interop standard-mode: RPC address of interop supervisor to use for cross-chain safety verification." +
+			"Applies only to Interop-enabled networks.",
+		EnvVars:  prefixEnvVars("INTEROP_SUPERVISOR"),
+		Category: InteropCategory,
+	}
+	InteropRPCAddr = &cli.StringFlag{
+		Name: "interop.rpc.addr",
+		Usage: "Interop Websocket-only RPC listening address, to serve supervisor syncing." +
+			"Applies only to Interop-enabled networks. Optional, alternative to follow-mode.",
+		EnvVars:  prefixEnvVars("INTEROP_RPC_ADDR"),
+		Value:    "127.0.0.1",
+		Category: InteropCategory,
+	}
+	InteropRPCPort = &cli.IntFlag{
+		Name: "interop.rpc.port",
+		Usage: "Interop RPC listening port, to serve supervisor syncing." +
+			"Applies only to Interop-enabled networks.",
+		EnvVars:  prefixEnvVars("INTEROP_RPC_PORT"),
+		Value:    9645, // Note: op-service/rpc/cli.go uses 8545 as the default.
+		Category: InteropCategory,
+	}
+	InteropJWTSecret = &cli.StringFlag{
+		Name: "interop.jwt-secret",
+		Usage: "Interop RPC server authentication. Path to JWT secret key. Keys are 32 bytes, hex encoded in a file. " +
+			"A new key will be generated if the file is empty. " +
+			"Applies only to Interop-enabled networks.",
+		EnvVars:     prefixEnvVars("INTEROP_JWT_SECRET"),
+		Value:       "",
+		Destination: new(string),
+		Category:    InteropCategory,
+	}
 )
 
 var requiredFlags = []cli.Flag{
@@ -398,11 +441,15 @@ var optionalFlags = []cli.Flag{
 	HeartbeatURLFlag,
 	RollupHalt,
 	RollupLoadProtocolVersions,
-	L1RethDBPath,
 	ConductorEnabledFlag,
 	ConductorRpcFlag,
 	ConductorRpcTimeoutFlag,
 	SafeDBPath,
+	L2EngineKind,
+	InteropSupervisor,
+	InteropRPCAddr,
+	InteropRPCPort,
+	InteropJWTSecret,
 }
 
 var DeprecatedFlags = []cli.Flag{
@@ -424,7 +471,7 @@ func init() {
 	optionalFlags = append(optionalFlags, oppprof.CLIFlagsWithCategory(EnvVarPrefix, OperationsCategory)...)
 	optionalFlags = append(optionalFlags, DeprecatedFlags...)
 	optionalFlags = append(optionalFlags, opflags.CLIFlags(EnvVarPrefix, RollupCategory)...)
-	optionalFlags = append(optionalFlags, plasma.CLIFlags(EnvVarPrefix, PlasmaCategory)...)
+	optionalFlags = append(optionalFlags, altda.CLIFlags(EnvVarPrefix, AltDACategory)...)
 	Flags = append(requiredFlags, optionalFlags...)
 }
 

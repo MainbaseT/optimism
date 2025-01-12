@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.15;
 
-import { IDripCheck } from "../IDripCheck.sol";
-
-interface IGelatoTreasury {
-    function totalDepositedAmount(address _user, address _token) external view returns (uint256);
-    function totalWithdrawnAmount(address _user, address _token) external view returns (uint256);
-}
+// Interfaces
+import { IGelatoTreasury } from "interfaces/vendor/IGelatoTreasury.sol";
+import { IDripCheck } from "src/periphery/drippie/IDripCheck.sol";
 
 /// @title CheckGelatoLow
 /// @notice DripCheck for checking if an account's Gelato ETH balance is below some threshold.

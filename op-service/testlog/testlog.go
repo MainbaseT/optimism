@@ -21,13 +21,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-
-	"golang.org/x/exp/slog"
 
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -160,9 +159,20 @@ func (l *logger) flush() {
 
 	scanner := bufio.NewScanner(l.buf)
 	for scanner.Scan() {
-		l.t.Logf("%*s%s", padding, "", scanner.Text())
+		l.internalFlush("%*s%s", padding, "", scanner.Text())
 	}
 	l.buf.Reset()
+}
+
+func (l *logger) internalFlush(format string, args ...any) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn("testlog: panic during flush", "recover", r)
+		}
+	}()
+
+	l.t.Helper()
+	l.t.Logf(format, args...)
 }
 
 // The Go testing lib uses the runtime package to get info about the calling site, and then decorates the line.

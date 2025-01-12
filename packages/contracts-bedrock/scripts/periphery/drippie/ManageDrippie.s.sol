@@ -4,15 +4,14 @@ pragma solidity ^0.8.0;
 import { console2 as console } from "forge-std/console2.sol";
 import { Script } from "forge-std/Script.sol";
 
-import { LibString } from "solady/src/utils/LibString.sol";
+import { LibString } from "@solady/utils/LibString.sol";
 
 import { IAutomate as IGelato } from "gelato/interfaces/IAutomate.sol";
 import { LibDataTypes as GelatoDataTypes } from "gelato/libraries/LibDataTypes.sol";
 import { LibTaskId as GelatoTaskId } from "gelato/libraries/LibTaskId.sol";
 import { GelatoBytes } from "gelato/vendor/gelato/GelatoBytes.sol";
 
-import { Config } from "scripts/Config.sol";
-import { Artifacts } from "scripts/Artifacts.s.sol";
+import { Config } from "scripts/libraries/Config.sol";
 import { DrippieConfig } from "scripts/periphery/drippie/DrippieConfig.s.sol";
 
 import { Drippie } from "src/periphery/drippie/Drippie.sol";
@@ -20,7 +19,7 @@ import { IDripCheck } from "src/periphery/drippie/IDripCheck.sol";
 
 /// @title ManageDrippie
 /// @notice Script for managing drips in the Drippie contract.
-contract ManageDrippie is Script, Artifacts {
+contract ManageDrippie is Script {
     /// @notice Struct that contains the data for a Gelato task.
     struct GelatoTaskData {
         address taskCreator;
@@ -41,8 +40,7 @@ contract ManageDrippie is Script, Artifacts {
     }
 
     /// @notice Sets up the deployment script.
-    function setUp() public override {
-        Artifacts.setUp();
+    function setUp() public {
         cfg = new DrippieConfig(Config.deployConfigPath());
         console.log("Config path: %s", Config.deployConfigPath());
     }
@@ -94,7 +92,7 @@ contract ManageDrippie is Script, Artifacts {
                 _config: Drippie.DripConfig({
                     reentrant: false,
                     interval: drip.interval,
-                    dripcheck: IDripCheck(mustGetAddress(drip.dripcheck)),
+                    dripcheck: IDripCheck(cfg.mustGetDripCheck(drip.dripcheck)),
                     checkparams: drip.checkparams,
                     actions: actions
                 })
@@ -105,14 +103,14 @@ contract ManageDrippie is Script, Artifacts {
     /// @notice Generates the data for a Gelato task that would trigger a drip.
     /// @param _drippie The drippie contract.
     /// @param _name The name of the drip.
-    /// @return _taskData Gelato task data.
+    /// @return taskData_ Gelato task data.
     function _makeGelatoDripTaskData(
         Drippie _drippie,
         string memory _name
     )
         internal
         view
-        returns (GelatoTaskData memory _taskData)
+        returns (GelatoTaskData memory taskData_)
     {
         // Get the drip interval.
         uint256 dripInterval = _drippie.getDripInterval(_name);
@@ -133,7 +131,7 @@ contract ManageDrippie is Script, Artifacts {
         args[1] = abi.encode(uint128(GelatoDataTypes.TriggerType.TIME), abi.encode(uint128(0), interval));
 
         // Create the task data.
-        _taskData = GelatoTaskData({
+        taskData_ = GelatoTaskData({
             taskCreator: msg.sender,
             execAddress: address(_drippie),
             execData: abi.encodeCall(Drippie.drip, (_name)),
@@ -160,7 +158,7 @@ contract ManageDrippie is Script, Artifacts {
     /// @param _gelato The gelato contract.
     /// @param _drippie The drippie contract.
     /// @param _name The name of the drip being triggered.
-    /// @return _active True if the task is active, false otherwise.
+    /// @return active_ True if the task is active, false otherwise.
     function _isGelatoDripTaskActive(
         IGelato _gelato,
         Drippie _drippie,
@@ -168,7 +166,7 @@ contract ManageDrippie is Script, Artifacts {
     )
         internal
         view
-        returns (bool _active)
+        returns (bool active_)
     {
         GelatoTaskData memory taskData = _makeGelatoDripTaskData({ _drippie: _drippie, _name: _name });
         bytes32 taskId = GelatoTaskId.getTaskId({
@@ -183,7 +181,7 @@ contract ManageDrippie is Script, Artifacts {
         bytes32[] memory taskIds = _gelato.getTaskIdsByUser(taskData.taskCreator);
         for (uint256 i = 0; i < taskIds.length; i++) {
             if (taskIds[i] == taskId) {
-                _active = true;
+                active_ = true;
             }
         }
     }

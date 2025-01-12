@@ -1,26 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.15;
 
-// Testing utilities
+// Testing
 import { CommonTest } from "test/setup/CommonTest.sol";
+
+// Contracts
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 // Libraries
 import { Constants } from "src/libraries/Constants.sol";
-import { EIP1967Helper } from "test/mocks/EIP1967Helper.sol";
 import { Predeploys } from "src/libraries/Predeploys.sol";
-
-// Target contract dependencies
-import { ResourceMetering } from "src/L1/ResourceMetering.sol";
-import { Proxy } from "src/universal/Proxy.sol";
-import { L1Block } from "src/L2/L1Block.sol";
 import { GasPayingToken } from "src/libraries/GasPayingToken.sol";
+import { EIP1967Helper } from "test/mocks/EIP1967Helper.sol";
 
-// Target contract
-import { SystemConfig } from "src/L1/SystemConfig.sol";
+// Interfaces
+import { IResourceMetering } from "interfaces/L1/IResourceMetering.sol";
+import { ISystemConfig } from "interfaces/L1/ISystemConfig.sol";
+import { IL1Block } from "interfaces/L2/IL1Block.sol";
 
 contract SystemConfig_Init is CommonTest {
-    event ConfigUpdate(uint256 indexed version, SystemConfig.UpdateType indexed updateType, bytes data);
+    event ConfigUpdate(uint256 indexed version, ISystemConfig.UpdateType indexed updateType, bytes data);
 }
 
 contract SystemConfig_Initialize_Test is SystemConfig_Init {
@@ -36,6 +35,7 @@ contract SystemConfig_Initialize_Test is SystemConfig_Init {
 
     function setUp() public virtual override {
         super.setUp();
+        skipIfForkTest("SystemConfig_Initialize_Test: cannot test initialization on forked network");
         batchInbox = deploy.cfg().batchInboxAddress();
         owner = deploy.cfg().finalSystemOwner();
         basefeeScalar = deploy.cfg().basefeeScalar();
@@ -43,25 +43,25 @@ contract SystemConfig_Initialize_Test is SystemConfig_Init {
         batcherHash = bytes32(uint256(uint160(deploy.cfg().batchSenderAddress())));
         gasLimit = uint64(deploy.cfg().l2GenesisBlockGasLimit());
         unsafeBlockSigner = deploy.cfg().p2pSequencerAddress();
-        systemConfigImpl = deploy.mustGetAddress("SystemConfig");
-        optimismMintableERC20Factory = deploy.mustGetAddress("OptimismMintableERC20FactoryProxy");
+        systemConfigImpl = EIP1967Helper.getImplementation(address(systemConfig));
+        optimismMintableERC20Factory = artifacts.mustGetAddress("OptimismMintableERC20FactoryProxy");
     }
 
     /// @dev Tests that constructor sets the correct values.
     function test_constructor_succeeds() external view {
-        SystemConfig impl = SystemConfig(systemConfigImpl);
-        assertEq(impl.owner(), address(0xdEaD));
+        ISystemConfig impl = ISystemConfig(systemConfigImpl);
+        assertEq(impl.owner(), address(0));
         assertEq(impl.overhead(), 0);
-        assertEq(impl.scalar(), uint256(0x01) << 248);
+        assertEq(impl.scalar(), 0);
         assertEq(impl.batcherHash(), bytes32(0));
-        assertEq(impl.gasLimit(), 1);
+        assertEq(impl.gasLimit(), 0);
         assertEq(impl.unsafeBlockSigner(), address(0));
         assertEq(impl.basefeeScalar(), 0);
         assertEq(impl.blobbasefeeScalar(), 0);
-        ResourceMetering.ResourceConfig memory actual = impl.resourceConfig();
-        assertEq(actual.maxResourceLimit, 1);
-        assertEq(actual.elasticityMultiplier, 1);
-        assertEq(actual.baseFeeMaxChangeDenominator, 2);
+        IResourceMetering.ResourceConfig memory actual = impl.resourceConfig();
+        assertEq(actual.maxResourceLimit, 0);
+        assertEq(actual.elasticityMultiplier, 0);
+        assertEq(actual.baseFeeMaxChangeDenominator, 0);
         assertEq(actual.minimumBaseFee, 0);
         assertEq(actual.systemTxMaxGas, 0);
         assertEq(actual.maximumBaseFee, 0);
@@ -91,8 +91,8 @@ contract SystemConfig_Initialize_Test is SystemConfig_Init {
         assertEq(systemConfig.basefeeScalar(), basefeeScalar);
         assertEq(systemConfig.blobbasefeeScalar(), blobbasefeeScalar);
         // Depends on `initialize` being called with defaults
-        ResourceMetering.ResourceConfig memory rcfg = Constants.DEFAULT_RESOURCE_CONFIG();
-        ResourceMetering.ResourceConfig memory actual = systemConfig.resourceConfig();
+        IResourceMetering.ResourceConfig memory rcfg = Constants.DEFAULT_RESOURCE_CONFIG();
+        IResourceMetering.ResourceConfig memory actual = systemConfig.resourceConfig();
         assertEq(actual.maxResourceLimit, rcfg.maxResourceLimit);
         assertEq(actual.elasticityMultiplier, rcfg.elasticityMultiplier);
         assertEq(actual.baseFeeMaxChangeDenominator, rcfg.baseFeeMaxChangeDenominator);
@@ -108,7 +108,7 @@ contract SystemConfig_Initialize_Test is SystemConfig_Init {
         assertEq(address(systemConfig.l1ERC721Bridge()), address(l1ERC721Bridge));
         assertEq(address(systemConfig.l1StandardBridge()), address(l1StandardBridge));
         assertEq(address(systemConfig.disputeGameFactory()), address(disputeGameFactory));
-        assertEq(address(systemConfig.optimismPortal()), address(optimismPortal));
+        assertEq(address(systemConfig.optimismPortal()), address(optimismPortal2));
         assertEq(address(systemConfig.optimismMintableERC20Factory()), address(optimismMintableERC20Factory));
         // Check gas paying token
         (address token, uint8 decimals) = systemConfig.gasPayingToken();
@@ -138,7 +138,7 @@ contract SystemConfig_Initialize_TestFail is SystemConfig_Initialize_Test {
             _unsafeBlockSigner: address(1),
             _config: Constants.DEFAULT_RESOURCE_CONFIG(),
             _batchInbox: address(0),
-            _addresses: SystemConfig.Addresses({
+            _addresses: ISystemConfig.Addresses({
                 l1CrossDomainMessenger: address(0),
                 l1ERC721Bridge: address(0),
                 l1StandardBridge: address(0),
@@ -168,7 +168,7 @@ contract SystemConfig_Initialize_TestFail is SystemConfig_Initialize_Test {
             _unsafeBlockSigner: address(1),
             _config: Constants.DEFAULT_RESOURCE_CONFIG(),
             _batchInbox: address(0),
-            _addresses: SystemConfig.Addresses({
+            _addresses: ISystemConfig.Addresses({
                 l1CrossDomainMessenger: address(0),
                 l1ERC721Bridge: address(0),
                 l1StandardBridge: address(0),
@@ -199,7 +199,7 @@ contract SystemConfig_Initialize_TestFail is SystemConfig_Initialize_Test {
             _unsafeBlockSigner: address(1),
             _config: Constants.DEFAULT_RESOURCE_CONFIG(),
             _batchInbox: address(0),
-            _addresses: SystemConfig.Addresses({
+            _addresses: ISystemConfig.Addresses({
                 l1CrossDomainMessenger: address(0),
                 l1ERC721Bridge: address(0),
                 l1StandardBridge: address(0),
@@ -217,7 +217,7 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
     /// @dev Tests that `setResourceConfig` reverts if the min base fee
     ///      is greater than the maximum allowed base fee.
     function test_setResourceConfig_badMinMax_reverts() external {
-        ResourceMetering.ResourceConfig memory config = ResourceMetering.ResourceConfig({
+        IResourceMetering.ResourceConfig memory config = IResourceMetering.ResourceConfig({
             maxResourceLimit: 20_000_000,
             elasticityMultiplier: 10,
             baseFeeMaxChangeDenominator: 8,
@@ -231,7 +231,7 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
     /// @dev Tests that `setResourceConfig` reverts if the baseFeeMaxChangeDenominator
     ///      is zero.
     function test_setResourceConfig_zeroDenominator_reverts() external {
-        ResourceMetering.ResourceConfig memory config = ResourceMetering.ResourceConfig({
+        IResourceMetering.ResourceConfig memory config = IResourceMetering.ResourceConfig({
             maxResourceLimit: 20_000_000,
             elasticityMultiplier: 10,
             baseFeeMaxChangeDenominator: 0,
@@ -246,7 +246,7 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
     function test_setResourceConfig_lowGasLimit_reverts() external {
         uint64 gasLimit = systemConfig.gasLimit();
 
-        ResourceMetering.ResourceConfig memory config = ResourceMetering.ResourceConfig({
+        IResourceMetering.ResourceConfig memory config = IResourceMetering.ResourceConfig({
             maxResourceLimit: uint32(gasLimit),
             elasticityMultiplier: 10,
             baseFeeMaxChangeDenominator: 8,
@@ -257,10 +257,23 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
         _initializeWithResourceConfig(config, "SystemConfig: gas limit too low");
     }
 
+    /// @dev Tests that `setResourceConfig` reverts if the gas limit is too low.
+    function test_setResourceConfig_elasticityMultiplierIs0_reverts() external {
+        IResourceMetering.ResourceConfig memory config = IResourceMetering.ResourceConfig({
+            maxResourceLimit: 20_000_000,
+            elasticityMultiplier: 0,
+            baseFeeMaxChangeDenominator: 8,
+            systemTxMaxGas: 1_000_000,
+            minimumBaseFee: 1 gwei,
+            maximumBaseFee: 2 gwei
+        });
+        _initializeWithResourceConfig(config, "SystemConfig: elasticity multiplier cannot be 0");
+    }
+
     /// @dev Tests that `setResourceConfig` reverts if the elasticity multiplier
     ///      and max resource limit are configured such that there is a loss of precision.
     function test_setResourceConfig_badPrecision_reverts() external {
-        ResourceMetering.ResourceConfig memory config = ResourceMetering.ResourceConfig({
+        IResourceMetering.ResourceConfig memory config = IResourceMetering.ResourceConfig({
             maxResourceLimit: 20_000_000,
             elasticityMultiplier: 11,
             baseFeeMaxChangeDenominator: 8,
@@ -274,15 +287,17 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
     /// @dev Helper to initialize the system config with a resource config and default values, and expect a revert
     ///      with the given message.
     function _initializeWithResourceConfig(
-        ResourceMetering.ResourceConfig memory config,
+        IResourceMetering.ResourceConfig memory config,
         string memory revertMessage
     )
         internal
     {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Init_ResourceConfig: initialize() interface differs from mainnet.");
         // Wipe out the initialized slot so the proxy can be initialized again
         vm.store(address(systemConfig), bytes32(0), bytes32(0));
         // Fetch the current gas limit
-        uint64 gasLimit = uint64(deploy.cfg().l2GenesisBlockGasLimit());
+        uint64 gasLimit = systemConfig.gasLimit();
 
         vm.expectRevert(bytes(revertMessage));
         systemConfig.initialize({
@@ -294,7 +309,7 @@ contract SystemConfig_Init_ResourceConfig is SystemConfig_Init {
             _unsafeBlockSigner: address(0),
             _config: config,
             _batchInbox: address(0),
-            _addresses: SystemConfig.Addresses({
+            _addresses: ISystemConfig.Addresses({
                 l1CrossDomainMessenger: address(0),
                 l1ERC721Bridge: address(0),
                 l1StandardBridge: address(0),
@@ -311,8 +326,11 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
     ERC20 token;
 
     function setUp() public override {
+        vm.skip(true, "Custom gas token not supported");
+
         token = new ERC20("Silly", "SIL");
         super.enableCustomGasToken(address(token));
+
         super.setUp();
     }
 
@@ -332,12 +350,12 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
             _unsafeBlockSigner: address(1),
             _config: Constants.DEFAULT_RESOURCE_CONFIG(),
             _batchInbox: address(0),
-            _addresses: SystemConfig.Addresses({
+            _addresses: ISystemConfig.Addresses({
                 l1CrossDomainMessenger: address(0),
                 l1ERC721Bridge: address(0),
                 disputeGameFactory: address(0),
                 l1StandardBridge: address(0),
-                optimismPortal: address(optimismPortal),
+                optimismPortal: address(optimismPortal2),
                 optimismMintableERC20Factory: address(0),
                 gasPayingToken: _gasPayingToken
             })
@@ -373,12 +391,21 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
         // don't use multicall3's address
         vm.assume(_token != MULTICALL3_ADDRESS);
 
-        vm.assume(bytes(_name).length <= 32);
-        vm.assume(bytes(_symbol).length <= 32);
+        // Using vm.assume() would cause too many test rejections.
+        string memory name = _name;
+        if (bytes(_name).length > 32) {
+            name = _name[:32];
+        }
 
-        vm.mockCall(_token, abi.encodeWithSelector(token.decimals.selector), abi.encode(18));
-        vm.mockCall(_token, abi.encodeWithSelector(token.name.selector), abi.encode(_name));
-        vm.mockCall(_token, abi.encodeWithSelector(token.symbol.selector), abi.encode(_symbol));
+        // Using vm.assume() would cause too many test rejections.
+        string memory symbol = _symbol;
+        if (bytes(_symbol).length > 32) {
+            symbol = _symbol[:32];
+        }
+
+        vm.mockCall(_token, abi.encodeCall(token.decimals, ()), abi.encode(18));
+        vm.mockCall(_token, abi.encodeCall(token.name, ()), abi.encode(name));
+        vm.mockCall(_token, abi.encodeCall(token.symbol, ()), abi.encode(symbol));
 
         cleanStorageAndInit(_token);
 
@@ -391,13 +418,13 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
             assertEq(systemConfig.gasPayingTokenSymbol(), "ETH");
         } else {
             assertEq(addr, _token);
-            assertEq(systemConfig.gasPayingTokenName(), _name);
-            assertEq(systemConfig.gasPayingTokenSymbol(), _symbol);
+            assertEq(systemConfig.gasPayingTokenName(), name);
+            assertEq(systemConfig.gasPayingTokenSymbol(), symbol);
         }
     }
 
     /// @dev Tests that initialization sets the correct values and getters work when token address passed is 0.
-    function test_initialize_customGasToken_zeroTokenAddress_succeeds() external {
+    function test_initialize_customGasTokenWithZeroTokenAddress_succeeds() external {
         cleanStorageAndInit(address(0));
 
         (address addr, uint8 decimals) = systemConfig.gasPayingToken();
@@ -409,7 +436,7 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
     }
 
     /// @dev Tests that initialization sets the correct values and getters work when token address is Constants.ETHER
-    function test_initialize_customGasToken_etherTokenAddress_succeeds() external {
+    function test_initialize_customGasTokenWithEtherTokenAddress_succeeds() external {
         cleanStorageAndInit(Constants.ETHER);
 
         (address addr, uint8 decimals) = systemConfig.gasPayingToken();
@@ -421,30 +448,30 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
     }
 
     /// @dev Tests that initialization fails if decimals are not 18.
-    function test_initialize_customGasToken_wrongDecimals_fails() external {
-        vm.mockCall(address(token), abi.encodeWithSelector(token.decimals.selector), abi.encode(8));
+    function test_initialize_customGasTokenWrongDecimals_fails() external {
+        vm.mockCall(address(token), abi.encodeCall(token.decimals, ()), abi.encode(8));
         vm.expectRevert("SystemConfig: bad decimals of gas paying token");
 
         cleanStorageAndInit(address(token));
     }
 
     /// @dev Tests that initialization fails if name is too long.
-    function test_initialize_customGasToken_nameTooLong_fails() external {
+    function test_initialize_customGasTokenNameTooLong_fails() external {
         string memory name = new string(32);
         name = string.concat(name, "a");
 
-        vm.mockCall(address(token), abi.encodeWithSelector(token.name.selector), abi.encode(name));
+        vm.mockCall(address(token), abi.encodeCall(token.name, ()), abi.encode(name));
         vm.expectRevert("GasPayingToken: string cannot be greater than 32 bytes");
 
         cleanStorageAndInit(address(token));
     }
 
     /// @dev Tests that initialization fails if symbol is too long.
-    function test_initialize_customGasToken_symbolTooLong_fails() external {
+    function test_initialize_customGasTokenSymbolTooLong_fails() external {
         string memory symbol = new string(33);
         symbol = string.concat(symbol, "a");
 
-        vm.mockCall(address(token), abi.encodeWithSelector(token.symbol.selector), abi.encode(symbol));
+        vm.mockCall(address(token), abi.encodeCall(token.symbol, ()), abi.encode(symbol));
         vm.expectRevert("GasPayingToken: string cannot be greater than 32 bytes");
 
         cleanStorageAndInit(address(token));
@@ -453,11 +480,11 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
     /// @dev Tests that initialization works with OptimismPortal.
     function test_initialize_customGasTokenCall_succeeds() external {
         vm.expectCall(
-            address(optimismPortal),
-            abi.encodeCall(optimismPortal.setGasPayingToken, (address(token), 18, bytes32("Silly"), bytes32("SIL")))
+            address(optimismPortal2),
+            abi.encodeCall(optimismPortal2.setGasPayingToken, (address(token), 18, bytes32("Silly"), bytes32("SIL")))
         );
 
-        vm.expectEmit(address(optimismPortal));
+        vm.expectEmit(address(optimismPortal2));
         emit TransactionDeposited(
             0xDeaDDEaDDeAdDeAdDEAdDEaddeAddEAdDEAd0001,
             Predeploys.L1_BLOCK_ATTRIBUTES,
@@ -467,7 +494,7 @@ contract SystemConfig_Init_CustomGasToken is SystemConfig_Init {
                 uint256(0), // value
                 uint64(200_000), // gasLimit
                 false, // isCreation,
-                abi.encodeCall(L1Block.setGasPayingToken, (address(token), 18, bytes32("Silly"), bytes32("SIL")))
+                abi.encodeCall(IL1Block.setGasPayingToken, (address(token), 18, bytes32("Silly"), bytes32("SIL")))
             )
         );
 
@@ -490,12 +517,16 @@ contract SystemConfig_Setters_TestFail is SystemConfig_Init {
 
     /// @notice Ensures that `setGasConfig` reverts if version byte is set.
     function test_setGasConfig_badValues_reverts() external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'scalar exceeds max' check DNE on op mainnet");
         vm.prank(systemConfig.owner());
         vm.expectRevert("SystemConfig: scalar exceeds max.");
         systemConfig.setGasConfig({ _overhead: 0, _scalar: type(uint256).max });
     }
 
     function test_setGasConfigEcotone_notOwner_reverts() external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setGasConfigEcotone' method DNE on op mainnet");
         vm.expectRevert("Ownable: caller is not the owner");
         systemConfig.setGasConfigEcotone({ _basefeeScalar: 0, _blobbasefeeScalar: 0 });
     }
@@ -527,13 +558,40 @@ contract SystemConfig_Setters_TestFail is SystemConfig_Init {
         vm.expectRevert("SystemConfig: gas limit too high");
         systemConfig.setGasLimit(maximumGasLimit + 1);
     }
+
+    /// @dev Tests that `setEIP1559Params` reverts if the caller is not the owner.
+    function test_setEIP1559Params_notOwner_reverts(uint32 _denominator, uint32 _elasticity) external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setEIP1559Params' method DNE on op mainnet");
+        vm.expectRevert("Ownable: caller is not the owner");
+        systemConfig.setEIP1559Params({ _denominator: _denominator, _elasticity: _elasticity });
+    }
+
+    /// @dev Tests that `setEIP1559Params` reverts if the denominator is zero.
+    function test_setEIP1559Params_zeroDenominator_reverts(uint32 _elasticity) external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setEIP1559Params' method DNE on op mainnet");
+        vm.prank(systemConfig.owner());
+        vm.expectRevert("SystemConfig: denominator must be >= 1");
+        systemConfig.setEIP1559Params({ _denominator: 0, _elasticity: _elasticity });
+    }
+
+    /// @dev Tests that `setEIP1559Params` reverts if the elasticity is zero.
+    function test_setEIP1559Params_zeroElasticity_reverts(uint32 _denominator) external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setEIP1559Params' method DNE on op mainnet");
+        _denominator = uint32(bound(_denominator, 1, type(uint32).max));
+        vm.prank(systemConfig.owner());
+        vm.expectRevert("SystemConfig: elasticity must be >= 1");
+        systemConfig.setEIP1559Params({ _denominator: _denominator, _elasticity: 0 });
+    }
 }
 
 contract SystemConfig_Setters_Test is SystemConfig_Init {
     /// @dev Tests that `setBatcherHash` updates the batcher hash successfully.
     function testFuzz_setBatcherHash_succeeds(bytes32 newBatcherHash) external {
         vm.expectEmit(address(systemConfig));
-        emit ConfigUpdate(0, SystemConfig.UpdateType.BATCHER, abi.encode(newBatcherHash));
+        emit ConfigUpdate(0, ISystemConfig.UpdateType.BATCHER, abi.encode(newBatcherHash));
 
         vm.prank(systemConfig.owner());
         systemConfig.setBatcherHash(newBatcherHash);
@@ -545,7 +603,7 @@ contract SystemConfig_Setters_Test is SystemConfig_Init {
         // always zero out most significant byte
         newScalar = (newScalar << 16) >> 16;
         vm.expectEmit(address(systemConfig));
-        emit ConfigUpdate(0, SystemConfig.UpdateType.GAS_CONFIG, abi.encode(newOverhead, newScalar));
+        emit ConfigUpdate(0, ISystemConfig.UpdateType.FEE_SCALARS, abi.encode(newOverhead, newScalar));
 
         vm.prank(systemConfig.owner());
         systemConfig.setGasConfig(newOverhead, newScalar);
@@ -554,11 +612,13 @@ contract SystemConfig_Setters_Test is SystemConfig_Init {
     }
 
     function testFuzz_setGasConfigEcotone_succeeds(uint32 _basefeeScalar, uint32 _blobbasefeeScalar) external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setGasConfigEcotone' method DNE on op mainnet");
         bytes32 encoded =
             ffi.encodeScalarEcotone({ _basefeeScalar: _basefeeScalar, _blobbasefeeScalar: _blobbasefeeScalar });
 
         vm.expectEmit(address(systemConfig));
-        emit ConfigUpdate(0, SystemConfig.UpdateType.GAS_CONFIG, abi.encode(systemConfig.overhead(), encoded));
+        emit ConfigUpdate(0, ISystemConfig.UpdateType.FEE_SCALARS, abi.encode(systemConfig.overhead(), encoded));
 
         vm.prank(systemConfig.owner());
         systemConfig.setGasConfigEcotone({ _basefeeScalar: _basefeeScalar, _blobbasefeeScalar: _blobbasefeeScalar });
@@ -578,7 +638,7 @@ contract SystemConfig_Setters_Test is SystemConfig_Init {
         newGasLimit = uint64(bound(uint256(newGasLimit), uint256(minimumGasLimit), uint256(maximumGasLimit)));
 
         vm.expectEmit(address(systemConfig));
-        emit ConfigUpdate(0, SystemConfig.UpdateType.GAS_LIMIT, abi.encode(newGasLimit));
+        emit ConfigUpdate(0, ISystemConfig.UpdateType.GAS_LIMIT, abi.encode(newGasLimit));
 
         vm.prank(systemConfig.owner());
         systemConfig.setGasLimit(newGasLimit);
@@ -588,10 +648,28 @@ contract SystemConfig_Setters_Test is SystemConfig_Init {
     /// @dev Tests that `setUnsafeBlockSigner` updates the block signer successfully.
     function testFuzz_setUnsafeBlockSigner_succeeds(address newUnsafeSigner) external {
         vm.expectEmit(address(systemConfig));
-        emit ConfigUpdate(0, SystemConfig.UpdateType.UNSAFE_BLOCK_SIGNER, abi.encode(newUnsafeSigner));
+        emit ConfigUpdate(0, ISystemConfig.UpdateType.UNSAFE_BLOCK_SIGNER, abi.encode(newUnsafeSigner));
 
         vm.prank(systemConfig.owner());
         systemConfig.setUnsafeBlockSigner(newUnsafeSigner);
         assertEq(systemConfig.unsafeBlockSigner(), newUnsafeSigner);
+    }
+
+    /// @dev Tests that `setEIP1559Params` updates the EIP1559 parameters successfully.
+    function testFuzz_setEIP1559Params_succeeds(uint32 _denominator, uint32 _elasticity) external {
+        // TODO(opcm upgrades): remove skip once upgrade is implemented
+        skipIfForkTest("SystemConfig_Setters_TestFail: 'setEIP1559Params' method DNE on op mainnet");
+        _denominator = uint32(bound(_denominator, 2, type(uint32).max));
+        _elasticity = uint32(bound(_elasticity, 2, type(uint32).max));
+
+        vm.expectEmit(address(systemConfig));
+        emit ConfigUpdate(
+            0, ISystemConfig.UpdateType.EIP_1559_PARAMS, abi.encode(uint256(_denominator) << 32 | uint64(_elasticity))
+        );
+
+        vm.prank(systemConfig.owner());
+        systemConfig.setEIP1559Params(_denominator, _elasticity);
+        assertEq(systemConfig.eip1559Denominator(), _denominator);
+        assertEq(systemConfig.eip1559Elasticity(), _elasticity);
     }
 }
