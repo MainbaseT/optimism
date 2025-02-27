@@ -18,6 +18,7 @@ type EnrichedClaim struct {
 
 type EnrichedGameData struct {
 	types.GameMetadata
+	LastUpdateTime        time.Time
 	L1Head                common.Hash
 	L1HeadNum             uint64
 	L2BlockNumber         uint64
@@ -36,6 +37,8 @@ type EnrichedGameData struct {
 
 	// Credits records the paid out bonds for the game, keyed by recipient.
 	Credits map[common.Address]*big.Int
+
+	BondDistributionMode faultTypes.BondDistributionMode
 
 	// WithdrawalRequests maps recipients with withdrawal requests in DelayedWETH for this game.
 	WithdrawalRequests map[common.Address]*contracts.WithdrawalRequest
