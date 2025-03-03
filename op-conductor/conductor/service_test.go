@@ -30,7 +30,7 @@ func mockConfig(t *testing.T) Config {
 	now := uint64(time.Now().Unix())
 	return Config{
 		ConsensusAddr:  "127.0.0.1",
-		ConsensusPort:  50050,
+		ConsensusPort:  0,
 		RaftServerID:   "SequencerA",
 		RaftStorageDir: "/tmp/raft",
 		RaftBootstrap:  false,
@@ -64,7 +64,7 @@ func mockConfig(t *testing.T) Config {
 			BlockTime:               2,
 			MaxSequencerDrift:       600,
 			SeqWindowSize:           3600,
-			ChannelTimeout:          300,
+			ChannelTimeoutBedrock:   300,
 			L1ChainID:               big.NewInt(1),
 			L2ChainID:               big.NewInt(2),
 			RegolithTime:            &now,
@@ -106,7 +106,7 @@ func (s *OpConductorTestSuite) SetupSuite() {
 	s.metrics = &metrics.NoopMetricsImpl{}
 	s.cfg = mockConfig(s.T())
 	s.version = "v0.0.1"
-	s.next = make(chan struct{}, 1)
+	s.next = make(chan struct{})
 }
 
 func (s *OpConductorTestSuite) SetupTest() {
@@ -122,14 +122,15 @@ func (s *OpConductorTestSuite) SetupTest() {
 	s.conductor = conductor
 
 	s.healthUpdateCh = make(chan error, 1)
-	s.hmon.EXPECT().Start().Return(nil)
+	s.hmon.EXPECT().Start(mock.Anything).Return(nil)
 	s.conductor.healthUpdateCh = s.healthUpdateCh
 
 	s.leaderUpdateCh = make(chan bool, 1)
 	s.conductor.leaderUpdateCh = s.leaderUpdateCh
 
 	s.err = errors.New("error")
-	s.syncEnabled = false // default to no sync, turn it on by calling s.enableSynchronization()
+	s.syncEnabled = false   // default to no sync, turn it on by calling s.enableSynchronization()
+	s.wg = sync.WaitGroup{} // create new wg for every test in case last test didn't finish the action loop during shutdown.
 }
 
 func (s *OpConductorTestSuite) TearDownTest() {
@@ -160,6 +161,7 @@ func (s *OpConductorTestSuite) enableSynchronization() {
 		s.wg.Done()
 	}
 	s.startConductor()
+	s.executeAction()
 }
 
 func (s *OpConductorTestSuite) disableSynchronization() {
@@ -848,6 +850,22 @@ func (s *OpConductorTestSuite) TestFailureAndRetry4() {
 		}
 		return res
 	}, 2*time.Second, 100*time.Millisecond)
+}
+
+func (s *OpConductorTestSuite) TestConductorRestart() {
+	// set initial state
+	s.conductor.leader.Store(false)
+	s.conductor.healthy.Store(true)
+	s.conductor.seqActive.Store(true)
+	s.ctrl.EXPECT().StopSequencer(mock.Anything).Return(common.Hash{}, nil).Times(1)
+
+	s.enableSynchronization()
+
+	// expect to stay as follower, go to [follower, healthy, not sequencing]
+	s.False(s.conductor.leader.Load())
+	s.True(s.conductor.healthy.Load())
+	s.False(s.conductor.seqActive.Load())
+	s.ctrl.AssertCalled(s.T(), "StopSequencer", mock.Anything)
 }
 
 func (s *OpConductorTestSuite) TestHandleInitError() {

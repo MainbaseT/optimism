@@ -3,7 +3,7 @@ pragma solidity 0.8.15;
 
 // Testing utilities
 import { CommonTest } from "test/setup/CommonTest.sol";
-import { OutputMode } from "scripts/L2Genesis.s.sol";
+import { Fork } from "scripts/libraries/Config.sol";
 
 // Libraries
 import { Encoding } from "src/libraries/Encoding.sol";
@@ -39,7 +39,7 @@ contract GasPriceOracleBedrock_Test is GasPriceOracle_Test {
     /// @dev Sets up the test suite.
     function setUp() public virtual override {
         // The gasPriceOracle tests rely on an L2 genesis that is not past Ecotone.
-        l2OutputMode = OutputMode.LOCAL_DELTA;
+        l2Fork = Fork.DELTA;
         super.setUp();
         assertEq(gasPriceOracle.isEcotone(), false);
 
@@ -93,6 +93,7 @@ contract GasPriceOracleBedrock_Test is GasPriceOracle_Test {
 
     /// @dev Tests that `setGasPrice` reverts since it was removed in bedrock.
     function test_setGasPrice_doesNotExist_reverts() external {
+        // nosemgrep: sol-style-use-abi-encodecall
         (bool success, bytes memory returndata) =
             address(gasPriceOracle).call(abi.encodeWithSignature("setGasPrice(uint256)", 1));
 
@@ -102,6 +103,7 @@ contract GasPriceOracleBedrock_Test is GasPriceOracle_Test {
 
     /// @dev Tests that `setL1BaseFee` reverts since it was removed in bedrock.
     function test_setL1BaseFee_doesNotExist_reverts() external {
+        // nosemgrep: sol-style-use-abi-encodecall
         (bool success, bytes memory returndata) =
             address(gasPriceOracle).call(abi.encodeWithSignature("setL1BaseFee(uint256)", 1));
 
@@ -115,12 +117,32 @@ contract GasPriceOracleBedrock_Test is GasPriceOracle_Test {
         vm.expectRevert("GasPriceOracle: Fjord can only be activated after Ecotone");
         gasPriceOracle.setFjord();
     }
+
+    /// @dev Tests that `getL1Fee` returns the expected value when both fjord and ecotone are not active
+    function test_getL1Fee_whenFjordAndEcotoneNotActive_succeeds() external {
+        vm.store(address(gasPriceOracle), bytes32(uint256(0)), bytes32(0));
+        bytes memory data = hex"1111";
+
+        uint256 price = gasPriceOracle.getL1Fee(data);
+        assertEq(price, 28_600); // ((((16 * data.length(i.e 2)) * (68 * 16)) + l1FeeOverhead(i.e. 310)) *
+            // l1BaseFee(i.e. 2M) *
+            // l1FeeScalar(i.e. 10)) / 1e6
+    }
+
+    /// @dev Tests that `getL1GasUsed` returns the expected value when both fjord and ecotone are not active
+    function test_getL1GasUsed_whenFjordAndEcotoneNotActive_succeeds() external {
+        vm.store(address(gasPriceOracle), bytes32(uint256(0)), bytes32(0));
+        bytes memory data = hex"1111";
+
+        uint256 gas = gasPriceOracle.getL1GasUsed(data);
+        assertEq(gas, 1_430); // 1398 + (16 * data.length(i.e 2))
+    }
 }
 
 contract GasPriceOracleEcotone_Test is GasPriceOracle_Test {
     /// @dev Sets up the test suite.
     function setUp() public virtual override {
-        l2OutputMode = OutputMode.LOCAL_ECOTONE; // activate ecotone
+        l2Fork = Fork.ECOTONE;
         super.setUp();
         assertEq(gasPriceOracle.isEcotone(), true);
 
@@ -131,7 +153,7 @@ contract GasPriceOracleEcotone_Test is GasPriceOracle_Test {
         // Execute the function call
         vm.prank(depositor);
         (bool success,) = address(l1Block).call(calldataPacked);
-        require(success, "Function call failed");
+        require(success, "GasPriceOracleEcotone_Test: Function call failed");
     }
 
     /// @dev Tests that `setEcotone` is only callable by the depositor.
@@ -213,7 +235,7 @@ contract GasPriceOracleEcotone_Test is GasPriceOracle_Test {
 contract GasPriceOracleFjordActive_Test is GasPriceOracle_Test {
     /// @dev Sets up the test suite.
     function setUp() public virtual override {
-        l2OutputMode = OutputMode.LOCAL_LATEST; // activate fjord
+        l2Fork = Fork.FJORD;
         super.setUp();
 
         bytes memory calldataPacked = Encoding.encodeSetL1BlockValuesEcotone(
@@ -222,7 +244,7 @@ contract GasPriceOracleFjordActive_Test is GasPriceOracle_Test {
 
         vm.prank(depositor);
         (bool success,) = address(l1Block).call(calldataPacked);
-        require(success, "Function call failed");
+        require(success, "GasPriceOracleFjordActive_Test: Function call failed");
     }
 
     /// @dev Tests that `setFjord` cannot be called when Fjord is already activate
