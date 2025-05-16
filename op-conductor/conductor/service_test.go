@@ -30,7 +30,7 @@ func mockConfig(t *testing.T) Config {
 	now := uint64(time.Now().Unix())
 	return Config{
 		ConsensusAddr:  "127.0.0.1",
-		ConsensusPort:  50050,
+		ConsensusPort:  0,
 		RaftServerID:   "SequencerA",
 		RaftStorageDir: "/tmp/raft",
 		RaftBootstrap:  false,
@@ -64,7 +64,7 @@ func mockConfig(t *testing.T) Config {
 			BlockTime:               2,
 			MaxSequencerDrift:       600,
 			SeqWindowSize:           3600,
-			ChannelTimeout:          300,
+			ChannelTimeoutBedrock:   300,
 			L1ChainID:               big.NewInt(1),
 			L2ChainID:               big.NewInt(2),
 			RegolithTime:            &now,
@@ -106,7 +106,7 @@ func (s *OpConductorTestSuite) SetupSuite() {
 	s.metrics = &metrics.NoopMetricsImpl{}
 	s.cfg = mockConfig(s.T())
 	s.version = "v0.0.1"
-	s.next = make(chan struct{}, 1)
+	s.next = make(chan struct{})
 }
 
 func (s *OpConductorTestSuite) SetupTest() {
@@ -122,14 +122,15 @@ func (s *OpConductorTestSuite) SetupTest() {
 	s.conductor = conductor
 
 	s.healthUpdateCh = make(chan error, 1)
-	s.hmon.EXPECT().Start().Return(nil)
+	s.hmon.EXPECT().Start(mock.Anything).Return(nil)
 	s.conductor.healthUpdateCh = s.healthUpdateCh
 
 	s.leaderUpdateCh = make(chan bool, 1)
 	s.conductor.leaderUpdateCh = s.leaderUpdateCh
 
 	s.err = errors.New("error")
-	s.syncEnabled = false // default to no sync, turn it on by calling s.enableSynchronization()
+	s.syncEnabled = false   // default to no sync, turn it on by calling s.enableSynchronization()
+	s.wg = sync.WaitGroup{} // create new wg for every test in case last test didn't finish the action loop during shutdown.
 }
 
 func (s *OpConductorTestSuite) TearDownTest() {
@@ -160,6 +161,7 @@ func (s *OpConductorTestSuite) enableSynchronization() {
 		s.wg.Done()
 	}
 	s.startConductor()
+	s.executeAction()
 }
 
 func (s *OpConductorTestSuite) disableSynchronization() {
@@ -185,11 +187,11 @@ func updateStatusAndExecuteAction[T any](s *OpConductorTestSuite, ch chan T, sta
 }
 
 func (s *OpConductorTestSuite) updateLeaderStatusAndExecuteAction(status bool) {
-	updateStatusAndExecuteAction[bool](s, s.leaderUpdateCh, status)
+	updateStatusAndExecuteAction(s, s.leaderUpdateCh, status)
 }
 
 func (s *OpConductorTestSuite) updateHealthStatusAndExecuteAction(status error) {
-	updateStatusAndExecuteAction[error](s, s.healthUpdateCh, status)
+	updateStatusAndExecuteAction(s, s.healthUpdateCh, status)
 }
 
 func (s *OpConductorTestSuite) executeAction() {
@@ -850,6 +852,22 @@ func (s *OpConductorTestSuite) TestFailureAndRetry4() {
 	}, 2*time.Second, 100*time.Millisecond)
 }
 
+func (s *OpConductorTestSuite) TestConductorRestart() {
+	// set initial state
+	s.conductor.leader.Store(false)
+	s.conductor.healthy.Store(true)
+	s.conductor.seqActive.Store(true)
+	s.ctrl.EXPECT().StopSequencer(mock.Anything).Return(common.Hash{}, nil).Times(1)
+
+	s.enableSynchronization()
+
+	// expect to stay as follower, go to [follower, healthy, not sequencing]
+	s.False(s.conductor.leader.Load())
+	s.True(s.conductor.healthy.Load())
+	s.False(s.conductor.seqActive.Load())
+	s.ctrl.AssertCalled(s.T(), "StopSequencer", mock.Anything)
+}
+
 func (s *OpConductorTestSuite) TestHandleInitError() {
 	// This will cause an error in the init function, which should cause the conductor to stop successfully without issues.
 	_, err := New(s.ctx, &s.cfg, s.log, s.version)
@@ -858,6 +876,102 @@ func (s *OpConductorTestSuite) TestHandleInitError() {
 	s.False(ok)
 }
 
+// TestRollupBoostHealthFailure tests that OpConductor correctly handles rollup boost health failures
+func (s *OpConductorTestSuite) TestRollupBoostHealthFailure() {
+	s.enableSynchronization()
+
+	// set initial state as a leader that is healthy and sequencing
+	s.conductor.leader.Store(true)
+	s.conductor.healthy.Store(true)
+	s.conductor.seqActive.Store(true)
+	s.conductor.prevState = &state{
+		leader:  true,
+		healthy: true,
+		active:  true,
+	}
+
+	// Setup expectations - leader with unhealthy rollup boost should stop sequencing and transfer leadership
+	s.ctrl.EXPECT().StopSequencer(mock.Anything).Return(common.Hash{}, nil).Times(1)
+	s.cons.EXPECT().TransferLeader().Return(nil).Times(1)
+
+	// Simulate a rollup boost health failure
+	s.updateHealthStatusAndExecuteAction(health.ErrRollupBoostNotHealthy)
+
+	// Verify the OpConductor transitions to follower state and stops sequencing
+	s.False(s.conductor.leader.Load(), "Should transition to follower")
+	s.False(s.conductor.healthy.Load(), "Should be marked as unhealthy")
+	s.False(s.conductor.seqActive.Load(), "Sequencer should be stopped")
+	s.Equal(health.ErrRollupBoostNotHealthy, s.conductor.hcerr, "Error should be stored")
+
+	// Verify method calls
+	s.ctrl.AssertNumberOfCalls(s.T(), "StopSequencer", 1)
+	s.cons.AssertNumberOfCalls(s.T(), "TransferLeader", 1)
+}
+
+// TestRollupBoostConnectionDown tests that OpConductor correctly handles rollup boost connection failures
+func (s *OpConductorTestSuite) TestRollupBoostConnectionDown() {
+	s.enableSynchronization()
+
+	// set initial state as a leader that is healthy and sequencing
+	s.conductor.leader.Store(true)
+	s.conductor.healthy.Store(true)
+	s.conductor.seqActive.Store(true)
+	s.conductor.prevState = &state{
+		leader:  true,
+		healthy: true,
+		active:  true,
+	}
+
+	// Setup expectations - leader with rollup boost connection down should stop sequencing and transfer leadership
+	s.ctrl.EXPECT().StopSequencer(mock.Anything).Return(common.Hash{}, nil).Times(1)
+	s.cons.EXPECT().TransferLeader().Return(nil).Times(1)
+
+	// Simulate a rollup boost connection failure
+	s.updateHealthStatusAndExecuteAction(health.ErrRollupBoostConnectionDown)
+
+	// Verify the OpConductor transitions to follower state and stops sequencing
+	s.False(s.conductor.leader.Load(), "Should transition to follower")
+	s.False(s.conductor.healthy.Load(), "Should be marked as unhealthy")
+	s.False(s.conductor.seqActive.Load(), "Sequencer should be stopped")
+	s.Equal(health.ErrRollupBoostConnectionDown, s.conductor.hcerr, "Error should be stored")
+
+	// Verify method calls
+	s.ctrl.AssertNumberOfCalls(s.T(), "StopSequencer", 1)
+	s.cons.AssertNumberOfCalls(s.T(), "TransferLeader", 1)
+}
+
 func TestControlLoop(t *testing.T) {
 	suite.Run(t, new(OpConductorTestSuite))
+}
+
+// TestSupervisorConnectionDown tests that OpConductor correctly handles supervisor connection failures
+func (s *OpConductorTestSuite) TestSupervisorConnectionDown() {
+	s.enableSynchronization()
+
+	// set initial state as a leader that is healthy and sequencing
+	s.conductor.leader.Store(true)
+	s.conductor.healthy.Store(true)
+	s.conductor.seqActive.Store(true)
+	s.conductor.prevState = &state{
+		leader:  true,
+		healthy: true,
+		active:  true,
+	}
+
+	// Setup expectations - leader with supervisor connection down should stop sequencing and transfer leadership
+	s.ctrl.EXPECT().StopSequencer(mock.Anything).Return(common.Hash{}, nil).Times(1)
+	s.cons.EXPECT().TransferLeader().Return(nil).Times(1)
+
+	// Simulate a supervisor connection failure
+	s.updateHealthStatusAndExecuteAction(health.ErrSupervisorConnectionDown)
+
+	// Verify the OpConductor transitions to follower state and stops sequencing
+	s.False(s.conductor.leader.Load(), "Should transition to follower")
+	s.False(s.conductor.healthy.Load(), "Should be marked as unhealthy")
+	s.False(s.conductor.seqActive.Load(), "Sequencer should be stopped")
+	s.Equal(health.ErrSupervisorConnectionDown, s.conductor.hcerr, "Error should be stored")
+
+	// Verify method calls
+	s.ctrl.AssertNumberOfCalls(s.T(), "StopSequencer", 1)
+	s.cons.AssertNumberOfCalls(s.T(), "TransferLeader", 1)
 }
