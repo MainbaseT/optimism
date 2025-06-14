@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -14,11 +15,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ethereum-optimism/optimism/op-node/metrics"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-node/version"
 	rpcclient "github.com/ethereum-optimism/optimism/op-service/client"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	opmetrics "github.com/ethereum-optimism/optimism/op-service/metrics"
 	"github.com/ethereum-optimism/optimism/op-service/testlog"
 	"github.com/ethereum-optimism/optimism/op-service/testutils"
 )
@@ -101,15 +102,14 @@ func TestOutputAtBlock(t *testing.T) {
 	safeReader := &mockSafeDBReader{}
 	status := randomSyncStatus(rand.New(rand.NewSource(123)))
 	drClient.ExpectBlockRefWithStatus(0xdcdc89, ref, status, nil)
-
-	server, err := newRPCServer(rpcCfg, rollupCfg, l2Client, drClient, safeReader, log, "0.0", metrics.NoopMetrics)
-	require.NoError(t, err)
+	m := &opmetrics.NoopRPCMetrics{}
+	server := newRPCServer(rpcCfg, rollupCfg, nil, l2Client, drClient, safeReader, log, m, "0.0")
 	require.NoError(t, server.Start())
 	defer func() {
-		require.NoError(t, server.Stop(context.Background()))
+		require.NoError(t, server.Stop())
 	}()
 
-	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Addr().String(), rpcclient.WithDialBackoff(3))
+	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Endpoint(), rpcclient.WithDialAttempts(3))
 	require.NoError(t, err)
 
 	var out *eth.OutputResponse
@@ -138,20 +138,53 @@ func TestVersion(t *testing.T) {
 	rollupCfg := &rollup.Config{
 		// ignore other rollup config info in this test
 	}
-	server, err := newRPCServer(rpcCfg, rollupCfg, l2Client, drClient, safeReader, log, "0.0", metrics.NoopMetrics)
-	assert.NoError(t, err)
+	m := &opmetrics.NoopRPCMetrics{}
+	server := newRPCServer(rpcCfg, rollupCfg, nil, l2Client, drClient, safeReader, log, m, "0.0")
 	assert.NoError(t, server.Start())
 	defer func() {
-		require.NoError(t, server.Stop(context.Background()))
+		require.NoError(t, server.Stop())
 	}()
 
-	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Addr().String(), rpcclient.WithDialBackoff(3))
+	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Endpoint(), rpcclient.WithDialAttempts(3))
 	assert.NoError(t, err)
 
 	var out string
 	err = client.CallContext(context.Background(), &out, "optimism_version")
 	assert.NoError(t, err)
 	assert.Equal(t, version.Version+"-"+version.Meta, out)
+}
+
+func TestDependencySet(t *testing.T) {
+	log := testlog.Logger(t, log.LevelError)
+	l2Client := &testutils.MockL2Client{}
+	drClient := &mockDriverClient{}
+	safeReader := &mockSafeDBReader{}
+	rpcCfg := &RPCConfig{
+		ListenAddr: "localhost",
+		ListenPort: 0,
+	}
+	rollupCfg := &rollup.Config{
+		// ignore other rollup config info in this test
+	}
+	m := &opmetrics.NoopRPCMetrics{}
+	depSet, err := depset.NewStaticConfigDependencySet(map[eth.ChainID]*depset.StaticConfigDependency{
+		eth.ChainIDFromUInt64(1): {},
+		eth.ChainIDFromUInt64(2): {},
+	})
+	require.NoError(t, err)
+	server := newRPCServer(rpcCfg, rollupCfg, depSet, l2Client, drClient, safeReader, log, m, "0.0")
+	assert.NoError(t, server.Start())
+	defer func() {
+		require.NoError(t, server.Stop())
+	}()
+
+	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Endpoint(), rpcclient.WithDialAttempts(3))
+	assert.NoError(t, err)
+
+	var out depset.StaticConfigDependencySet
+	err = client.CallContext(context.Background(), &out, "optimism_dependencySet")
+	assert.NoError(t, err)
+	assert.Equal(t, depSet, &out)
 }
 
 func randomSyncStatus(rng *rand.Rand) *eth.SyncStatus {
@@ -184,14 +217,14 @@ func TestSyncStatus(t *testing.T) {
 	rollupCfg := &rollup.Config{
 		// ignore other rollup config info in this test
 	}
-	server, err := newRPCServer(rpcCfg, rollupCfg, l2Client, drClient, safeReader, log, "0.0", metrics.NoopMetrics)
-	assert.NoError(t, err)
+	m := &opmetrics.NoopRPCMetrics{}
+	server := newRPCServer(rpcCfg, rollupCfg, nil, l2Client, drClient, safeReader, log, m, "0.0")
 	assert.NoError(t, server.Start())
 	defer func() {
-		require.NoError(t, server.Stop(context.Background()))
+		require.NoError(t, server.Stop())
 	}()
 
-	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Addr().String(), rpcclient.WithDialBackoff(3))
+	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Endpoint(), rpcclient.WithDialAttempts(3))
 	assert.NoError(t, err)
 
 	var out *eth.SyncStatus
@@ -227,14 +260,14 @@ func TestSafeHeadAtL1Block(t *testing.T) {
 	rollupCfg := &rollup.Config{
 		// ignore other rollup config info in this test
 	}
-	server, err := newRPCServer(rpcCfg, rollupCfg, l2Client, drClient, safeReader, log, "0.0", metrics.NoopMetrics)
-	require.NoError(t, err)
+	m := &opmetrics.NoopRPCMetrics{}
+	server := newRPCServer(rpcCfg, rollupCfg, nil, l2Client, drClient, safeReader, log, m, "0.0")
 	require.NoError(t, server.Start())
 	defer func() {
-		require.NoError(t, server.Stop(context.Background()))
+		require.NoError(t, server.Stop())
 	}()
 
-	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Addr().String(), rpcclient.WithDialBackoff(3))
+	client, err := rpcclient.NewRPC(context.Background(), log, "http://"+server.Endpoint(), rpcclient.WithDialAttempts(3))
 	require.NoError(t, err)
 
 	var out *eth.SafeHeadResponse
@@ -281,6 +314,19 @@ func (c *mockDriverClient) SequencerActive(ctx context.Context) (bool, error) {
 
 func (c *mockDriverClient) OnUnsafeL2Payload(ctx context.Context, payload *eth.ExecutionPayloadEnvelope) error {
 	return c.Mock.MethodCalled("OnUnsafeL2Payload").Get(0).(error)
+}
+
+func (c *mockDriverClient) OverrideLeader(ctx context.Context) error {
+	return c.Mock.MethodCalled("OverrideLeader").Get(0).(error)
+}
+
+func (c *mockDriverClient) ConductorEnabled(ctx context.Context) (bool, error) {
+	return c.Mock.MethodCalled("ConductorEnabled").Get(0).(bool), nil
+}
+
+func (c *mockDriverClient) SetRecoverMode(ctx context.Context, mode bool) error {
+	c.Mock.MethodCalled("SetRecoverMode")
+	return nil
 }
 
 type mockSafeDBReader struct {

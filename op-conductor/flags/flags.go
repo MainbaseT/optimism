@@ -2,6 +2,7 @@ package flags
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -18,15 +19,21 @@ const EnvVarPrefix = "OP_CONDUCTOR"
 var (
 	ConsensusAddr = &cli.StringFlag{
 		Name:    "consensus.addr",
-		Usage:   "Address to listen for consensus connections",
+		Usage:   "Address (excluding port) to listen for consensus connections.",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_ADDR"),
 		Value:   "127.0.0.1",
 	}
 	ConsensusPort = &cli.IntFlag{
 		Name:    "consensus.port",
-		Usage:   "Port to listen for consensus connections",
+		Usage:   "Port to listen for consensus connections. May be 0 to let the system select a port.",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_PORT"),
 		Value:   50050,
+	}
+	AdvertisedFullAddr = &cli.StringFlag{
+		Name:    "consensus.advertised",
+		Usage:   "Full address (host and port) for other peers to contact the consensus server. Optional: if left empty, the local address is advertised.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "CONSENSUS_ADVERTISED"),
+		Value:   "",
 	}
 	RaftBootstrap = &cli.BoolFlag{
 		Name:    "raft.bootstrap",
@@ -44,6 +51,36 @@ var (
 		Usage:   "Directory to store raft data",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_STORAGE_DIR"),
 	}
+	RaftSnapshotInterval = &cli.DurationFlag{
+		Name:    "raft.snapshot-interval",
+		Usage:   "The interval to check if a snapshot should be taken.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_SNAPSHOT_INTERVAL"),
+		Value:   120 * time.Second,
+	}
+	RaftSnapshotThreshold = &cli.Uint64Flag{
+		Name:    "raft.snapshot-threshold",
+		Usage:   "Number of logs to trigger a snapshot",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_SNAPSHOT_THRESHOLD"),
+		Value:   8192,
+	}
+	RaftTrailingLogs = &cli.Uint64Flag{
+		Name:    "raft.trailing-logs",
+		Usage:   "Number of logs to keep after a snapshot",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_TRAILING_LOGS"),
+		Value:   10240,
+	}
+	RaftHeartbeatTimeout = &cli.DurationFlag{
+		Name:    "raft.heartbeat-timeout",
+		Usage:   "Heartbeat interval timeout",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_HEARTBEAT_TIMEOUT"),
+		Value:   1000 * time.Millisecond,
+	}
+	RaftLeaderLeaseTimeout = &cli.DurationFlag{
+		Name:    "raft.lease-timeout",
+		Usage:   "Leader lease timeout",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RAFT_LEASE_TIMEOUT"),
+		Value:   500 * time.Millisecond,
+	}
 	NodeRPC = &cli.StringFlag{
 		Name:    "node.rpc",
 		Usage:   "HTTP provider URL for op-node",
@@ -53,6 +90,23 @@ var (
 		Name:    "execution.rpc",
 		Usage:   "HTTP provider URL for execution layer",
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "EXECUTION_RPC"),
+	}
+	SupervisorRPC = &cli.StringFlag{
+		Name:    "supervisor.rpc",
+		Usage:   "HTTP provider URL for supervisor",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "SUPERVISOR_RPC"),
+	}
+	RollupBoostEnabled = &cli.BoolFlag{
+		Name:    "rollup-boost.enabled",
+		Usage:   "Should be set to true if execution.rpc points to a rollup boost instance, false otherwise. If true, rollup boost specific healthchecks will be performed against the rollup boost instance.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "ROLLUP_BOOST_ENABLED"),
+		Value:   false,
+	}
+	RollupBoostHealthcheckTimeout = &cli.DurationFlag{
+		Name:    "rollup-boost.healthcheck-timeout",
+		Usage:   "Timeout for rollup boost healthcheck",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "ROLLUP_BOOST_HEALTHCHECK_TIMEOUT"),
+		Value:   5 * time.Second,
 	}
 	HealthCheckInterval = &cli.Uint64Flag{
 		Name:    "healthcheck.interval",
@@ -93,6 +147,17 @@ var (
 		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "RPC_ENABLE_PROXY"),
 		Value:   true,
 	}
+	RollupBoostWsURL = &cli.StringFlag{
+		Name:    "rollupboost.ws-url",
+		Usage:   "WebSocket URL for the rollup boost to listen for payload streams.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "ROLLUPBOOST_WS_URL"),
+	}
+	WebsocketServerPort = &cli.IntFlag{
+		Name:    "websocket.server-port",
+		Usage:   "Port for the conductor to run a WebSocket server that pushes payload streams out.",
+		EnvVars: opservice.PrefixEnvVar(EnvVarPrefix, "WEBSOCKET_SERVER_PORT"),
+		Value:   8546,
+	}
 )
 
 var requiredFlags = []cli.Flag{
@@ -108,11 +173,20 @@ var requiredFlags = []cli.Flag{
 }
 
 var optionalFlags = []cli.Flag{
+	AdvertisedFullAddr,
 	Paused,
 	RPCEnableProxy,
 	RaftBootstrap,
 	HealthCheckSafeEnabled,
 	HealthCheckSafeInterval,
+	RaftSnapshotInterval,
+	RaftSnapshotThreshold,
+	RaftTrailingLogs,
+	RaftHeartbeatTimeout,
+	RaftLeaderLeaseTimeout,
+	SupervisorRPC,
+	RollupBoostEnabled,
+	RollupBoostHealthcheckTimeout,
 }
 
 func init() {
@@ -121,7 +195,8 @@ func init() {
 	optionalFlags = append(optionalFlags, opmetrics.CLIFlags(EnvVarPrefix)...)
 	optionalFlags = append(optionalFlags, oppprof.CLIFlags(EnvVarPrefix)...)
 	optionalFlags = append(optionalFlags, opflags.CLIFlags(EnvVarPrefix, "")...)
-
+	optionalFlags = append(optionalFlags, RollupBoostWsURL)
+	optionalFlags = append(optionalFlags, WebsocketServerPort)
 	Flags = append(requiredFlags, optionalFlags...)
 }
 

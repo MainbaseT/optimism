@@ -1,16 +1,7 @@
 {
-  "[typescript]": {
-    "editor.defaultFormatter": "dbaeumer.vscode-eslint",
-    "editor.formatOnSave": true
-  },
-  "eslint.workingDirectories": [
-    {
-      "directory": "packages/chain-mon",
-      "changeProcessCWD": true
-    }
-  ],
-  "eslint.nodePath": "./node_modules/eslint/bin/",
-  "eslint.format.enable": true,
   "editorconfig.generateAuto": false,
-  "files.trimTrailingWhitespace": true
+  "files.trimTrailingWhitespace": true,
+  "openInGitHub.defaultBranch": "develop",
+  "openInGitHub.alwaysUseDefaultBranch": false,
+  "openInGitHub.excludeCurrentRevision": true
 }

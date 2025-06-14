@@ -1,13 +1,14 @@
 package log
 
 import (
+	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/urfave/cli/v2"
-	"golang.org/x/exp/slog"
 	"golang.org/x/term"
 
 	"github.com/ethereum/go-ethereum/log"
@@ -21,6 +22,14 @@ const (
 	FormatFlagName = "log.format"
 	ColorFlagName  = "log.color"
 	PidFlagName    = "log.pid"
+)
+
+// These flag configurations are used during testing, where level is set to trace.
+var (
+	flLevel  = flag.String(LevelFlagName, "trace", "Lowest log level that will be output")
+	flFormat = flag.String(FormatFlagName, "text", "Log format: text|terminal|logfmt|json|json-pretty")
+	flColor  = flag.Bool(ColorFlagName, false, "Color the log output if in terminal mode: true|false")
+	flPID    = flag.Bool(PidFlagName, false, "Show pid in the log")
 )
 
 func CLIFlags(envPrefix string) []cli.Flag {
@@ -140,7 +149,7 @@ func FormatHandler(ft FormatType, color bool) func(io.Writer) slog.Handler {
 	case FormatJSON:
 		return log.JSONHandler
 	case FormatText:
-		if term.IsTerminal(int(os.Stdout.Fd())) {
+		if color {
 			return termColorHandler
 		} else {
 			return logfmtHandler
@@ -251,4 +260,33 @@ func ReadCLIConfig(ctx *cli.Context) CLIConfig {
 	}
 	cfg.Pid = ctx.Bool(PidFlagName)
 	return cfg
+}
+
+// ReadTestCLIConfig reads the CLI config from flags and environment variables into a CLIConfig.
+// flag.Parse() must be called before calling this function.
+func ReadTestCLIConfig() CLIConfig {
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		*flLevel = v
+	}
+	if v := os.Getenv("LOG_FORMAT"); v != "" {
+		*flFormat = v
+	}
+	if v := os.Getenv("LOG_COLOR"); v != "" {
+		*flColor = v == "true"
+	}
+	if v := os.Getenv("LOG_PID"); v != "" {
+		*flPID = v == "true"
+	}
+
+	lvl, err := LevelFromString(*flLevel)
+	if err != nil {
+		panic(fmt.Errorf("failed to parse log level: %w", err))
+	}
+
+	return CLIConfig{
+		Level:  lvl,
+		Format: FormatType(*flFormat),
+		Color:  term.IsTerminal(int(os.Stdout.Fd())) || *flColor,
+		Pid:    *flPID,
+	}
 }
