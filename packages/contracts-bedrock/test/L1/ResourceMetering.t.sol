@@ -1,24 +1,32 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.15;
 
-// Testing utilities
+// Testing
 import { Test } from "forge-std/Test.sol";
+
+// Contracts
+import { ResourceMetering } from "src/L1/ResourceMetering.sol";
 
 // Libraries
 import { Constants } from "src/libraries/Constants.sol";
 
-// Target contract dependencies
-import { Proxy } from "src/universal/Proxy.sol";
-
-// Target contract
-import { ResourceMetering } from "src/L1/ResourceMetering.sol";
+// Interfaces
+import { IResourceMetering } from "interfaces/L1/IResourceMetering.sol";
 
 contract MeterUser is ResourceMetering {
     ResourceMetering.ResourceConfig public innerConfig;
 
     constructor() {
         initialize();
-        innerConfig = Constants.DEFAULT_RESOURCE_CONFIG();
+        IResourceMetering.ResourceConfig memory rcfg = Constants.DEFAULT_RESOURCE_CONFIG();
+        innerConfig = ResourceMetering.ResourceConfig({
+            maxResourceLimit: rcfg.maxResourceLimit,
+            elasticityMultiplier: rcfg.elasticityMultiplier,
+            baseFeeMaxChangeDenominator: rcfg.baseFeeMaxChangeDenominator,
+            minimumBaseFee: rcfg.minimumBaseFee,
+            systemTxMaxGas: rcfg.systemTxMaxGas,
+            maximumBaseFee: rcfg.maximumBaseFee
+        });
     }
 
     function initialize() public initializer {
@@ -48,21 +56,24 @@ contract MeterUser is ResourceMetering {
     }
 }
 
-/// @title ResourceMetering_Test
-/// @dev Tests are based on the default config values.
-///      It is expected that these config values are used in production.
-contract ResourceMetering_Test is Test {
+/// @title ResourceMetering_TestInit
+/// @notice Reusable test initialization for `ResourceMetering` tests.
+contract ResourceMetering_TestInit is Test {
     MeterUser internal meter;
     uint64 initialBlockNum;
 
-    /// @dev Sets up the test contract.
+    /// @notice Sets up the test contract.
     function setUp() public {
         meter = new MeterUser();
         initialBlockNum = uint64(block.number);
     }
+}
 
-    /// @dev Tests that the initial resource params are set correctly.
-    function test_meter_initialResourceParams_succeeds() external view {
+/// @title ResourceMetering_ResourceMeteringInit_Test
+/// @notice Tests the `__ResourceMeteringInit` contract's initialization.
+contract ResourceMetering_ResourceMeteringInit_Test is ResourceMetering_TestInit {
+    /// @notice Tests that the initial resource params are set correctly.
+    function test_resourceMeteringInit_initialResourceParams_succeeds() external view {
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
 
@@ -71,8 +82,8 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBlockNum, initialBlockNum);
     }
 
-    /// @dev Tests that reinitializing the resource params are set correctly.
-    function test_meter_reinitializedResourceParams_succeeds() external {
+    /// @notice Tests that reinitializing the resource params are set correctly.
+    function test_resourceMeteringInit_reinitializedResourceParams_succeeds() external {
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
 
         // Reset the initialized slot to enable reinitialization.
@@ -84,9 +95,15 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBoughtGas, postBoughtGas);
         assertEq(prevBlockNum, postBlockNum);
     }
+}
 
-    /// @dev Tests that updating the resource params to the same values works correctly.
-    function test_meter_updateParamsNoChange_succeeds() external {
+/// @title ResourceMetering_Metered_Test
+/// @notice Tests the `metered` modifier on the `ResourceMetering` contract.
+/// @dev Tests are based on the default config values. It is expected that these config values are
+///      used in production.
+contract ResourceMetering_Metered_Test is ResourceMetering_TestInit {
+    /// @notice Tests that updating the resource params to the same values works correctly.
+    function test_metered_updateParamsNoChange_succeeds() external {
         meter.use(0); // equivalent to just updating the base fee and block number
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
         meter.use(0);
@@ -97,8 +114,8 @@ contract ResourceMetering_Test is Test {
         assertEq(postBlockNum, prevBlockNum);
     }
 
-    /// @dev Tests that updating the initial block number sets the meter params correctly.
-    function test_meter_updateOneEmptyBlock_succeeds() external {
+    /// @notice Tests that updating the initial block number sets the meter params correctly.
+    function test_metered_updateOneEmptyBlock_succeeds() external {
         vm.roll(initialBlockNum + 1);
         meter.use(0);
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
@@ -108,8 +125,8 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBlockNum, initialBlockNum + 1);
     }
 
-    /// @dev Tests that updating the initial block number sets the meter params correctly.
-    function test_meter_updateTwoEmptyBlocks_succeeds() external {
+    /// @notice Tests that updating the initial block number sets the meter params correctly.
+    function test_metered_updateTwoEmptyBlocks_succeeds() external {
         vm.roll(initialBlockNum + 2);
         meter.use(0);
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
@@ -119,8 +136,8 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBlockNum, initialBlockNum + 2);
     }
 
-    /// @dev Tests that updating the initial block number sets the meter params correctly.
-    function test_meter_updateTenEmptyBlocks_succeeds() external {
+    /// @notice Tests that updating the initial block number sets the meter params correctly.
+    function test_metered_updateTenEmptyBlocks_succeeds() external {
         vm.roll(initialBlockNum + 10);
         meter.use(0);
         (uint128 prevBaseFee, uint64 prevBoughtGas, uint64 prevBlockNum) = meter.params();
@@ -130,8 +147,8 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBlockNum, initialBlockNum + 10);
     }
 
-    /// @dev Tests that updating the gas delta sets the meter params correctly.
-    function test_meter_updateNoGasDelta_succeeds() external {
+    /// @notice Tests that updating the gas delta sets the meter params correctly.
+    function test_metered_updateNoGasDelta_succeeds() external {
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
         uint256 target = uint256(rcfg.maxResourceLimit) / uint256(rcfg.elasticityMultiplier);
         meter.use(uint64(target));
@@ -142,8 +159,8 @@ contract ResourceMetering_Test is Test {
         assertEq(prevBlockNum, initialBlockNum);
     }
 
-    /// @dev Tests that the meter params are set correctly for the maximum gas delta.
-    function test_meter_useMax_succeeds() external {
+    /// @notice Tests that the meter params are set correctly for the maximum gas delta.
+    function test_metered_useMax_succeeds() external {
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
         uint64 target = uint64(rcfg.maxResourceLimit) / uint64(rcfg.elasticityMultiplier);
         uint64 elasticityMultiplier = uint64(rcfg.elasticityMultiplier);
@@ -159,10 +176,11 @@ contract ResourceMetering_Test is Test {
         assertEq(postBaseFee, 2125000000);
     }
 
-    /// @dev Tests that the metered modifier reverts if the baseFeeMaxChangeDenominator is set to 1.
-    ///      Since the metered modifier internally calls solmate's powWad function, it will revert
-    ///      with the error string "UNDEFINED" since the first parameter will be computed as 0.
-    function test_meter_denominatorEq1_reverts() external {
+    /// @notice Tests that the metered modifier reverts if the baseFeeMaxChangeDenominator is set
+    ///         to 1. Since the metered modifier internally calls solmate's powWad function, it
+    ///         will revert with the error string "UNDEFINED" since the first parameter will be
+    ///         computed as 0.
+    function test_metered_denominatorEq1_reverts() external {
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
         uint64 target = uint64(rcfg.maxResourceLimit) / uint64(rcfg.elasticityMultiplier);
         uint64 elasticityMultiplier = uint64(rcfg.elasticityMultiplier);
@@ -179,8 +197,8 @@ contract ResourceMetering_Test is Test {
         meter.use(0);
     }
 
-    /// @dev Tests that the metered modifier reverts if the value is greater than allowed.
-    function test_meter_useMoreThanMax_reverts() external {
+    /// @notice Tests that the metered modifier reverts if the value is greater than allowed.
+    function test_metered_useMoreThanMax_reverts() external {
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
         uint64 target = uint64(rcfg.maxResourceLimit) / uint64(rcfg.elasticityMultiplier);
         uint64 elasticityMultiplier = uint64(rcfg.elasticityMultiplier);
@@ -189,24 +207,25 @@ contract ResourceMetering_Test is Test {
         meter.use(target * elasticityMultiplier + 1);
     }
 
-    /// @dev Tests that resource metering can handle large gaps between deposits.
-    function testFuzz_meter_largeBlockDiff_succeeds(uint64 _amount, uint256 _blockDiff) external {
+    /// @notice Tests that resource metering can handle large gaps between deposits.
+    function testFuzz_metered_largeBlockDiff_succeeds(uint64 _amount, uint256 _blockDiff) external {
         // This test fails if the following line is commented out.
         // At 12 seconds per block, this number is effectively unreachable.
-        vm.assume(_blockDiff < 433576281058164217753225238677900874458691);
+        _blockDiff = uint256(bound(_blockDiff, 0, 433576281058164217753225238677900874458690));
 
         ResourceMetering.ResourceConfig memory rcfg = meter.resourceConfig();
         uint64 target = uint64(rcfg.maxResourceLimit) / uint64(rcfg.elasticityMultiplier);
         uint64 elasticityMultiplier = uint64(rcfg.elasticityMultiplier);
 
-        vm.assume(_amount < target * elasticityMultiplier);
+        _amount = uint64(bound(_amount, 0, target * elasticityMultiplier));
+
         vm.roll(initialBlockNum + _blockDiff);
         meter.use(_amount);
     }
 
-    function testFuzz_meter_useGas_succeeds(uint64 _amount) external {
+    function testFuzz_metered_useGas_succeeds(uint64 _amount) external {
         (, uint64 prevBoughtGas,) = meter.params();
-        vm.assume(prevBoughtGas + _amount <= meter.resourceConfig().maxResourceLimit);
+        _amount = uint64(bound(_amount, 0, meter.resourceConfig().maxResourceLimit - prevBoughtGas));
 
         meter.use(_amount);
 
@@ -216,8 +235,8 @@ contract ResourceMetering_Test is Test {
 }
 
 /// @title CustomMeterUser
-/// @notice A simple wrapper around `ResourceMetering` that allows the initial
-///         params to be set in the constructor.
+/// @notice A simple wrapper around `ResourceMetering` that allows the initial params to be set in
+///         the constructor.
 contract CustomMeterUser is ResourceMetering {
     uint256 public startGas;
     uint256 public endGas;
@@ -231,7 +250,15 @@ contract CustomMeterUser is ResourceMetering {
     }
 
     function _resourceConfig() internal pure override returns (ResourceMetering.ResourceConfig memory) {
-        return Constants.DEFAULT_RESOURCE_CONFIG();
+        IResourceMetering.ResourceConfig memory rcfg = Constants.DEFAULT_RESOURCE_CONFIG();
+        return ResourceMetering.ResourceConfig({
+            maxResourceLimit: rcfg.maxResourceLimit,
+            elasticityMultiplier: rcfg.elasticityMultiplier,
+            baseFeeMaxChangeDenominator: rcfg.baseFeeMaxChangeDenominator,
+            minimumBaseFee: rcfg.minimumBaseFee,
+            systemTxMaxGas: rcfg.systemTxMaxGas,
+            maximumBaseFee: rcfg.maximumBaseFee
+        });
     }
 
     function use(uint64 _amount) public returns (uint256) {
@@ -242,13 +269,12 @@ contract CustomMeterUser is ResourceMetering {
 }
 
 /// @title ArtifactResourceMetering_Test
-/// @notice A table test that sets the state of the ResourceParams and then requests
-///         various amounts of gas. This test ensures that a wide range of values
-///         can safely be used with the `ResourceMetering` contract.
-///         It also writes a CSV file to disk that includes useful information
-///         about how much gas is used and how expensive it is in USD terms to
-///         purchase the deposit gas.
-contract ArtifactResourceMetering_Test is Test {
+/// @notice A table test that sets the state of the ResourceParams and then requests various
+///         amounts of gas. This test ensures that a wide range of values can safely be used with
+///         the `ResourceMetering` contract. It also writes a CSV file to disk that includes useful
+///         information about how much gas is used and how expensive it is in USD terms to purchase
+///         the deposit gas.
+contract ArtifactResourceMetering_Metered_Test is Test {
     uint128 internal minimumBaseFee;
     uint128 internal maximumBaseFee;
     uint64 internal maxResourceLimit;
@@ -256,15 +282,15 @@ contract ArtifactResourceMetering_Test is Test {
 
     string internal outfile;
 
-    // keccak256(abi.encodeWithSignature("Error(string)", "ResourceMetering: cannot buy more gas than available gas
-    // limit"))
+    // keccak256(abi.encodeWithSignature("Error(string)", "ResourceMetering: cannot buy more gas
+    // than available gas limit"))
     bytes32 internal cannotBuyMoreGas = 0x84edc668cfd5e050b8999f43ff87a1faaa93e5f935b20bc1dd4d3ff157ccf429;
     // keccak256(abi.encodeWithSignature("Panic(uint256)", 0x11))
     bytes32 internal overflowErr = 0x1ca389f2c8264faa4377de9ce8e14d6263ef29c68044a9272d405761bab2db27;
     // keccak256(hex"")
     bytes32 internal emptyReturnData = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
 
-    /// @dev Sets up the tests with constants from the ResourceMetering contract.
+    /// @notice Sets up the tests with constants from the ResourceMetering contract.
     function setUp() public {
         vm.roll(1_000_000);
 
@@ -279,9 +305,14 @@ contract ArtifactResourceMetering_Test is Test {
         try vm.removeFile(outfile) { } catch { }
     }
 
-    /// @dev Generates a CSV file. No more than the L1 block gas limit should
-    ///      be supplied to the `meter` function to avoid long execution time.
+    /// @notice Generates a CSV file. No more than the L1 block gas limit should be supplied to the
+    ///         `meter` function to avoid long execution time. This test is skipped because there
+    ///         is no need to run it every time. It generates a CSV file on disk that can be used
+    ///         to analyze the gas usage and cost of the `ResourceMetering` contract. The next time
+    ///         that the gas usage needs to be analyzed, the skip may be removed.
     function test_meter_generateArtifact_succeeds() external {
+        vm.skip({ skipTest: true });
+
         vm.writeLine(
             outfile,
             "prevBaseFee,prevBoughtGas,prevBlockNumDiff,l1BaseFee,requestedGas,gasConsumed,ethPrice,usdCost,success"
@@ -352,8 +383,8 @@ contract ArtifactResourceMetering_Test is Test {
                                 // Call the metering code and catch the various
                                 // types of errors.
                                 uint256 gasConsumed = 0;
-                                try meter.use{ gas: 30_000_000 }(requestedGas) returns (uint256 _gasConsumed) {
-                                    gasConsumed = _gasConsumed;
+                                try meter.use{ gas: 30_000_000 }(requestedGas) returns (uint256 gasConsumed_) {
+                                    gasConsumed = gasConsumed_;
                                 } catch (bytes memory err) {
                                     bytes32 hash = keccak256(err);
                                     if (hash == cannotBuyMoreGas) {
